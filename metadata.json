@@ -1,0 +1,6 @@
+{
+  "name": "Smart Restaurant Management & Customer Queue System",
+  "description": "Dine-in restaurant management with 5 interfaces (Main, Customer, Staff, Kitchen, Admin), Google Apps Script & Sheets architecture, table allocation, capacity-fit queue, authorized kitchen prep, manual UPI verification, and PBKDF2/HMAC security.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
