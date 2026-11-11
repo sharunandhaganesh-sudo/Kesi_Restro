@@ -74,7 +74,7 @@ export class BillingService {
       // 6. Grand Total
       const grandTotal = Math.max(0, Math.round((subtotal + taxAmount - discountAmount) * 100) / 100);
 
-      const billId = `BILL-${Date.now().toString().slice(-6)}`;
+      const billId = `BILL-${Date.now().toString().slice(-6)}-${Math.floor(100 + Math.random() * 900)}`;
       const now = new Date().toISOString();
 
       // Record adjustments details
