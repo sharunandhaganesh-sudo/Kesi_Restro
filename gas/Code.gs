@@ -155,6 +155,19 @@ function handleApiRequest(request) {
       case "completeManualRefund":
         return createJsonResponse(handleCompleteManualRefund(payload));
 
+      // 6. Table QR Code Operations
+      case "resolveTableQR":
+        return createJsonResponse(handleResolveTableQR(payload));
+
+      case "getAllTableQRs":
+        return createJsonResponse(handleGetAllTableQRs(payload));
+
+      case "regenerateTableQR":
+        return createJsonResponse(handleRegenerateTableQR(payload));
+
+      case "toggleTableQR":
+        return createJsonResponse(handleToggleTableQR(payload));
+
       default:
         return createJsonResponse({
           success: false,
@@ -330,44 +343,246 @@ function handleTestIntegrationRecord(payload) {
   };
 }
 
-function handleRequestCustomerOtp(payload) {
+function computeDefaultHmacHex_(inputText, secret) {
+  var key = secret || "savor_restaurant_32byte_secure_secret_key_2026";
+  var bytes = Utilities.computeHmacSha256Signature(String(inputText), key);
+  var hex = "";
+  for (var i = 0; i < bytes.length; i++) {
+    var v = bytes[i];
+    if (v < 0) v += 256;
+    var h = v.toString(16);
+    if (h.length === 1) hex += "0";
+    hex += h;
+  }
+  return hex.toLowerCase();
+}
+
+function sendOtpViaCodeGsFallback_(customer) {
+  if (customer.OTP_Last_Sent_At) {
+    var last = new Date(customer.OTP_Last_Sent_At).getTime();
+    if (!isNaN(last)) {
+      var elapsed = Math.floor((Date.now() - last) / 1000);
+      if (elapsed < 60) {
+        return {
+          success: false,
+          cooldown: true,
+          remainingSeconds: 60 - elapsed,
+          message: "Please wait " + (60 - elapsed) + " seconds before requesting another code."
+        };
+      }
+    }
+  }
+
+  var rawOtp = String(Math.floor(100000 + Math.random() * 900000));
+  var otpHash = computeDefaultHmacHex_(rawOtp);
+  var now = new Date();
+  var expiryIso = new Date(now.getTime() + 5 * 60 * 1000).toISOString();
+  var sentAtIso = now.toISOString();
+  var guestName = customer.Customer_Name || "Valued Guest";
+
+  MailApp.sendEmail({
+    to: customer.Email,
+    subject: "Your SAVOR Verification Code: " + rawOtp,
+    body: "Hello " + guestName + ",\n\nYour 6-digit verification code for SAVOR Restaurant is: " + rawOtp + "\n\nThis code expires in 5 minutes.",
+    htmlBody:
+      "<div style='font-family:sans-serif;max-width:520px;margin:0 auto;padding:24px;border:1px solid #d2d2d7;border-radius:16px;'>" +
+      "<h2 style='color:#0071E3;margin:0 0 12px;'>SAVOR Restaurant</h2>" +
+      "<p>Hello <strong>" + guestName + "</strong>,</p>" +
+      "<p>Your 6-digit verification code is:</p>" +
+      "<div style='font-size:34px;font-weight:700;letter-spacing:8px;color:#0071E3;padding:16px;background:#f5f5f7;border-radius:12px;text-align:center;'>" + rawOtp + "</div>" +
+      "<p style='color:#6e6e73;font-size:12px;margin-top:16px;'>This code expires in 5 minutes.</p></div>",
+    name: "SAVOR Restaurant Guest Services"
+  });
+
   return {
     success: true,
-    message: "OTP sent successfully to " + payload.email + ".",
+    message: "A 6-digit verification code has been sent to " + customer.Email,
+    otpHash: otpHash,
+    otpExpiry: expiryIso,
+    otpLastSentAt: sentAtIso,
+    emailResult: {
+      success: true,
+      recipient: customer.Email,
+      sentAt: sentAtIso,
+      remainingDailyQuota: MailApp.getRemainingDailyQuota()
+    }
+  };
+}
+
+function handleRequestCustomerOtp(payload) {
+  var mobile = payload.mobileNumber ? String(payload.mobileNumber).trim() : "";
+  var emailInput = payload.email ? String(payload.email).trim().toLowerCase() : "";
+  var nameInput = payload.customerName ? String(payload.customerName).trim() : "";
+
+  var customers = getSheetDataAsObjects("Customers");
+  var existing = mobile
+    ? customers.find(function(c) { return String(c.Mobile_Number) === mobile; })
+    : (emailInput ? customers.find(function(c) { return String(c.Email).toLowerCase() === emailInput; }) : null);
+
+  var customerRecord = existing;
+
+  if (!customerRecord) {
+    if (!emailInput || emailInput.indexOf("@") === -1) {
+      return {
+        success: false,
+        isNewCustomer: true,
+        error: { code: "EMAIL_REQUIRED", message: "Customer email address is required for OTP verification." },
+        message: "New customer profile details (name and email) are required."
+      };
+    }
+    var newCustId = "CUST-" + Date.now().toString().slice(-6);
+    customerRecord = {
+      Customer_ID: newCustId,
+      Customer_Name: nameInput || "Valued Guest",
+      Mobile_Number: mobile || "",
+      Email: emailInput,
+      Created_At: new Date().toISOString(),
+      OTP_Hash: "",
+      OTP_Expiry: "",
+      OTP_Attempts: 0,
+      OTP_Last_Sent_At: "",
+      OTP_Session_ID: ""
+    };
+    appendSheetRow("Customers", customerRecord);
+  } else {
+    var resolvedEmail = (customerRecord.Email && customerRecord.Email.indexOf("@") !== -1)
+      ? customerRecord.Email
+      : emailInput;
+    if (!resolvedEmail || resolvedEmail.indexOf("@") === -1) {
+      return {
+        success: false,
+        error: { code: "EMAIL_REQUIRED", message: "A valid email address is required to send OTP." },
+        message: "A valid email address is required to send OTP."
+      };
+    }
+    customerRecord.Email = resolvedEmail;
+    if (nameInput && !customerRecord.Customer_Name) {
+      customerRecord.Customer_Name = nameInput;
+    }
+  }
+
+  var otpResult = (typeof processCustomerOtpRequest === "function")
+    ? processCustomerOtpRequest(customerRecord)
+    : sendOtpViaCodeGsFallback_(customerRecord);
+
+  if (!otpResult.success) {
+    return {
+      success: false,
+      cooldown: Boolean(otpResult.cooldown),
+      message: otpResult.message,
+      data: {
+        cooldownRemainingSeconds: otpResult.remainingSeconds || 0
+      },
+      error: {
+        code: otpResult.cooldown ? "OTP_COOLDOWN" : "OTP_SEND_FAILED",
+        message: otpResult.message
+      }
+    };
+  }
+
+  updateSheetRowById("Customers", "Customer_ID", customerRecord.Customer_ID, {
+    Email: customerRecord.Email,
+    OTP_Hash: otpResult.otpHash,
+    OTP_Expiry: otpResult.otpExpiry,
+    OTP_Attempts: 0,
+    OTP_Last_Sent_At: otpResult.otpLastSentAt
+  });
+
+  return {
+    success: true,
+    message: otpResult.message,
     data: {
-      sentAt: new Date().toISOString(),
+      customerId: customerRecord.Customer_ID,
+      customerName: customerRecord.Customer_Name,
+      email: customerRecord.Email,
+      otpHash: otpResult.otpHash,
+      otpExpiry: otpResult.otpExpiry,
+      otpLastSentAt: otpResult.otpLastSentAt,
+      sentAt: otpResult.otpLastSentAt,
       expiresInMinutes: 5,
-      cooldownSeconds: 60
+      cooldownSeconds: 60,
+      emailSent: true,
+      emailResult: otpResult.emailResult
     }
   };
 }
 
 function handleVerifyCustomerOtp(payload) {
+  var mobile = payload.mobileNumber ? String(payload.mobileNumber).trim() : "";
+  var otp = payload.otp ? String(payload.otp).trim() : "";
   var customers = getSheetDataAsObjects("Customers");
-  var existing = customers.find(function(c) { return String(c.Mobile_Number) === String(payload.mobileNumber); });
+  var existing = customers.find(function(c) { return String(c.Mobile_Number) === mobile; });
   var custId = existing ? existing.Customer_ID : "CUST-" + Date.now().toString().slice(-6);
 
   if (!existing) {
+    if (otp) {
+      return {
+        success: false,
+        error: { code: "AUTH_FAILED", message: "Customer record not found. Please request an OTP first." },
+        message: "Customer record not found. Please request an OTP first."
+      };
+    }
     appendSheetRow("Customers", {
       Customer_ID: custId,
       Customer_Name: payload.customerName || "Guest Customer",
-      Mobile_Number: payload.mobileNumber,
+      Mobile_Number: mobile,
       Email: payload.email || "",
       Created_At: new Date().toISOString()
     });
+  } else if (otp && existing.OTP_Hash) {
+    var validation = (typeof validateCustomerOtpEntry === "function")
+      ? validateCustomerOtpEntry(existing, otp)
+      : (function() {
+          var attempts = Number(existing.OTP_Attempts) || 0;
+          if (attempts >= 3) {
+            return { isValid: false, error: "Maximum verification attempts exceeded (3/3). Please request a new OTP.", newAttemptsCount: attempts };
+          }
+          if (!existing.OTP_Expiry || Date.now() > new Date(existing.OTP_Expiry).getTime()) {
+            return { isValid: false, error: "Verification code has expired. Please request a new OTP.", newAttemptsCount: attempts };
+          }
+          var matches = computeDefaultHmacHex_(otp) === String(existing.OTP_Hash).toLowerCase();
+          return matches
+            ? { isValid: true, newAttemptsCount: 0 }
+            : { isValid: false, error: "Invalid verification code. " + (2 - attempts) + " attempt(s) remaining.", newAttemptsCount: attempts + 1 };
+        })();
+
+    if (!validation.isValid) {
+      updateSheetRowById("Customers", "Customer_ID", custId, {
+        OTP_Attempts: validation.newAttemptsCount
+      });
+      return {
+        success: false,
+        error: { code: "AUTH_FAILED", message: validation.error },
+        message: validation.error
+      };
+    }
   }
 
   var sessionId = "SESS-CUST-" + Date.now();
+  if (existing) {
+    updateSheetRowById("Customers", "Customer_ID", custId, {
+      OTP_Hash: "",
+      OTP_Expiry: "",
+      OTP_Attempts: 0,
+      OTP_Session_ID: sessionId
+    });
+  }
+
   return {
     success: true,
     data: {
       sessionId: sessionId,
+      customerId: custId,
+      customerName: existing ? existing.Customer_Name : (payload.customerName || "Guest"),
+      email: existing ? existing.Email : (payload.email || ""),
+      mobileNumber: mobile,
+      role: "Customer",
       user: {
         userId: custId,
         userName: existing ? existing.Customer_Name : (payload.customerName || "Guest"),
         email: existing ? existing.Email : (payload.email || ""),
         role: "Customer",
-        mobileNumber: payload.mobileNumber
+        mobileNumber: mobile
       }
     },
     message: "Authenticated successfully."
@@ -736,4 +951,193 @@ function handleGetDraftCart(payload) {
   var props = PropertiesService.getScriptProperties();
   var saved = props.getProperty("CART_" + payload.customerId);
   return { success: true, data: saved ? JSON.parse(saved) : [] };
+}
+
+// ==========================================
+// TABLE QR CODE HANDLERS (PERSISTED IN Restaurant_Settings)
+// ==========================================
+
+function computeDefaultTableQrToken_(tableId) {
+  var cleanId = String(tableId || "").replace(/[^A-Z0-9]/gi, "");
+  var hex = computeDefaultHmacHex_("SAVOR_DEFAULT_TABLE_QR_" + tableId);
+  return "TBLQR_" + cleanId + "_" + hex.slice(0, 16).toUpperCase();
+}
+
+function upsertRestaurantSetting_(key, value) {
+  var updated = updateSheetRowById("Restaurant_Settings", "Setting_Key", key, {
+    Setting_Value: value
+  });
+  if (!updated) {
+    appendSheetRow("Restaurant_Settings", {
+      Setting_Key: key,
+      Setting_Value: value
+    });
+  }
+}
+
+function handleGetAllTableQRs(payload) {
+  var baseUrl = (payload && payload.baseUrl) ? payload.baseUrl : "https://savor-dinein.app";
+  var tables = getSheetDataAsObjects("Tables");
+  var settings = getSheetDataAsObjects("Restaurant_Settings");
+  var settingsMap = {};
+  settings.forEach(function(s) { settingsMap[s.Setting_Key] = s.Setting_Value; });
+
+  var records = tables.map(function(tbl) {
+    var key = "TABLE_QR_" + tbl.Table_ID;
+    var parsed = null;
+    if (settingsMap[key]) {
+      try { parsed = JSON.parse(settingsMap[key]); } catch (e) { parsed = null; }
+    }
+    var token = (parsed && parsed.token) ? parsed.token : computeDefaultTableQrToken_(tbl.Table_ID);
+    var isActive = parsed ? (parsed.isActive !== false) : true;
+    var generatedAt = (parsed && parsed.generatedAt) ? parsed.generatedAt : new Date().toISOString();
+
+    if (!parsed || !parsed.token) {
+      upsertRestaurantSetting_(key, JSON.stringify({
+        token: token,
+        tableId: tbl.Table_ID,
+        isActive: isActive,
+        generatedAt: generatedAt
+      }));
+    }
+
+    return {
+      tableId: tbl.Table_ID,
+      tableNumber: tbl.Table_Number,
+      capacity: Number(tbl.Seating_Capacity),
+      status: tbl.Table_Status,
+      token: token,
+      qrUrl: baseUrl + "/?scan-table=1&token=" + encodeURIComponent(token),
+      isActive: isActive,
+      generatedAt: generatedAt
+    };
+  });
+
+  return { success: true, data: records };
+}
+
+function handleRegenerateTableQR(payload) {
+  var tableId = payload.tableId;
+  if (!tableId) {
+    return { success: false, error: { code: "BAD_REQUEST", message: "tableId is required." } };
+  }
+  var cleanId = String(tableId).replace(/[^A-Z0-9]/gi, "");
+  var token = payload.token || ("TBLQR_" + cleanId + "_" + computeDefaultHmacHex_(tableId + "_" + Date.now() + "_" + Math.random()).slice(0, 16).toUpperCase());
+  var record = {
+    token: token,
+    tableId: tableId,
+    isActive: true,
+    generatedAt: new Date().toISOString()
+  };
+  upsertRestaurantSetting_("TABLE_QR_" + tableId, JSON.stringify(record));
+  return {
+    success: true,
+    data: { token: token },
+    message: "New QR token generated and synced to Google Sheets for " + tableId + "."
+  };
+}
+
+function handleToggleTableQR(payload) {
+  var tableId = payload.tableId;
+  var isActive = payload.isActive !== false && payload.isActive !== "false";
+  var key = "TABLE_QR_" + tableId;
+  var settings = getSheetDataAsObjects("Restaurant_Settings");
+  var row = settings.find(function(s) { return s.Setting_Key === key; });
+  var parsed = null;
+  if (row && row.Setting_Value) {
+    try { parsed = JSON.parse(row.Setting_Value); } catch (e) { parsed = null; }
+  }
+  if (!parsed || !parsed.token) {
+    parsed = {
+      token: computeDefaultTableQrToken_(tableId),
+      tableId: tableId,
+      generatedAt: new Date().toISOString()
+    };
+  }
+  parsed.isActive = isActive;
+  upsertRestaurantSetting_(key, JSON.stringify(parsed));
+  return {
+    success: true,
+    message: "QR code for " + tableId + " is now " + (isActive ? "Active" : "Disabled") + "."
+  };
+}
+
+function handleResolveTableQR(payload) {
+  var token = payload && payload.token ? String(payload.token).trim() : "";
+  if (!token || token.indexOf("TBLQR_") !== 0) {
+    return {
+      success: false,
+      error: { code: "QR_INVALID", message: "Invalid or unrecognized table QR code." }
+    };
+  }
+
+  var tables = getSheetDataAsObjects("Tables");
+  var settings = getSheetDataAsObjects("Restaurant_Settings");
+  var settingsMap = {};
+  var matchedRecord = null;
+
+  settings.forEach(function(s) {
+    if (String(s.Setting_Key).indexOf("TABLE_QR_") === 0) {
+      settingsMap[s.Setting_Key] = s.Setting_Value;
+      try {
+        var parsed = JSON.parse(s.Setting_Value);
+        if (parsed.token === token) {
+          matchedRecord = parsed;
+        }
+      } catch (e) {}
+    }
+  });
+
+  // Fallback for deterministic initial QR codes before Admin explicitly visits Settings
+  if (!matchedRecord) {
+    for (var i = 0; i < tables.length; i++) {
+      var tbl = tables[i];
+      var key = "TABLE_QR_" + tbl.Table_ID;
+      if (!settingsMap[key] && computeDefaultTableQrToken_(tbl.Table_ID) === token) {
+        matchedRecord = { token: token, tableId: tbl.Table_ID, isActive: true };
+        break;
+      }
+    }
+  }
+
+  if (!matchedRecord) {
+    return {
+      success: false,
+      error: { code: "QR_EXPIRED", message: "QR token expired, regenerated, or not recognized." }
+    };
+  }
+
+  if (matchedRecord.isActive === false) {
+    return {
+      success: false,
+      error: { code: "QR_DISABLED", message: "This table QR code has been disabled by the administrator." }
+    };
+  }
+
+  var targetTable = tables.find(function(t) { return t.Table_ID === matchedRecord.tableId; });
+  if (!targetTable) {
+    return {
+      success: false,
+      error: { code: "TABLE_NOT_FOUND", message: "Associated table record no longer exists." }
+    };
+  }
+
+  if (targetTable.Table_Status === "Unavailable") {
+    return {
+      success: false,
+      data: { table: targetTable, isAvailableForImmediateOrder: false },
+      error: { code: "TABLE_UNAVAILABLE", message: "Table " + targetTable.Table_Number + " is currently marked Unavailable for maintenance." }
+    };
+  }
+
+  return {
+    success: true,
+    data: {
+      success: true,
+      table: targetTable,
+      isAvailableForImmediateOrder: targetTable.Table_Status === "Available",
+      message: "Verified Table " + targetTable.Table_Number + " (Capacity: " + targetTable.Seating_Capacity + " guests)."
+    },
+    message: "Verified Table " + targetTable.Table_Number + " (Capacity: " + targetTable.Seating_Capacity + " guests)."
+  };
 }

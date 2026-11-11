@@ -94,15 +94,30 @@ export class EmailService {
    * to send a real email via MailApp.sendEmail()
    */
   public static async dispatchLiveGasOtp(params: {
-    recipientEmail: string;
+    recipientEmail?: string;
     customerName?: string;
     mobileNumber?: string;
-  }): Promise<{ success: boolean; otpHash?: string; otpExpiry?: string; message?: string }> {
+  }): Promise<{
+    success: boolean;
+    otpHash?: string;
+    otpExpiry?: string;
+    email?: string;
+    customerName?: string;
+    customerId?: string;
+    message?: string;
+    cooldown?: boolean;
+    cooldownRemainingSeconds?: number;
+    isNewCustomer?: boolean;
+    stubDetected?: boolean;
+    emailSent?: boolean;
+  }> {
     try {
       if (typeof fetch === 'function') {
         const url = new URL(this.LIVE_APPS_SCRIPT_URL);
         url.searchParams.set('action', 'requestCustomerOTP');
-        url.searchParams.set('email', params.recipientEmail);
+        if (params.recipientEmail) {
+          url.searchParams.set('email', params.recipientEmail);
+        }
         url.searchParams.set('customerName', params.customerName || 'Valued Guest');
         if (params.mobileNumber) {
           url.searchParams.set('mobileNumber', params.mobileNumber);
@@ -110,13 +125,51 @@ export class EmailService {
 
         const response = await fetch(url.toString(), { method: 'GET' });
         const data = await response.json();
+
+        if (data && data.cooldown) {
+          return {
+            success: false,
+            cooldown: true,
+            cooldownRemainingSeconds: data.data?.cooldownRemainingSeconds,
+            message: data.message || 'Please wait before requesting another verification code.',
+          };
+        }
+
+        if (data && data.isNewCustomer && !data.success) {
+          return {
+            success: false,
+            isNewCustomer: true,
+            message: data.message,
+          };
+        }
+
         if (data && data.success && data.data) {
-          console.log(`[Google Apps Script MailApp] Real email OTP dispatched to ${params.recipientEmail}`);
+          if (!data.data.otpHash) {
+            return {
+              success: false,
+              stubDetected: true,
+              message:
+                'Live Google Apps Script Web App needs updated gas/Code.gs deployed as a new version to send real MailApp OTP emails.',
+            };
+          }
+
+          console.log(`[Google Apps Script MailApp] Real email OTP dispatched to ${data.data.email || params.recipientEmail}`);
           return {
             success: true,
+            emailSent: data.data.emailSent !== false,
             otpHash: data.data.otpHash,
             otpExpiry: data.data.otpExpiry,
+            email: data.data.email,
+            customerName: data.data.customerName,
+            customerId: data.data.customerId,
             message: data.data.message || data.message,
+          };
+        }
+
+        if (data && !data.success) {
+          return {
+            success: false,
+            message: data.error?.message || data.message || 'Google Apps Script failed to send OTP email.',
           };
         }
       }

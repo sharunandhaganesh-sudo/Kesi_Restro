@@ -79,12 +79,39 @@ export class RequestDispatcher {
         case 'verifyCustomerOTP': {
           const res = AuthService.verifyCustomerOTP(payload);
           if (!res.success) {
+            // Fallback to live GAS OTP verification in browser (handles page reloads & custom GAS ScriptProperties secrets)
+            if (typeof window !== 'undefined' && payload.otp) {
+              const gasVerify = await GasAdapter.execute('verifyCustomerOTP', {
+                mobileNumber: payload.mobileNumber,
+                otp: payload.otp,
+              });
+              if (gasVerify.success && gasVerify.data?.sessionId) {
+                const syncedSession = AuthService.syncCustomerSessionFromGas({
+                  sessionId: gasVerify.data.sessionId,
+                  customerId: gasVerify.data.customerId || gasVerify.data.user?.userId || `CUST-${Date.now().toString().slice(-6)}`,
+                  customerName: gasVerify.data.customerName || gasVerify.data.user?.userName || 'Guest',
+                  mobileNumber: payload.mobileNumber,
+                  email: gasVerify.data.email || gasVerify.data.user?.email || '',
+                });
+                return {
+                  success: true,
+                  data: syncedSession,
+                  message: gasVerify.message || 'Authentication successful.',
+                };
+              }
+              if (!gasVerify.success && gasVerify.error?.code === 'AUTH_FAILED') {
+                return {
+                  success: false,
+                  error: { code: 'AUTH_FAILED', message: gasVerify.error.message },
+                };
+              }
+            }
             return {
               success: false,
               error: { code: 'AUTH_FAILED', message: res.message },
             };
           }
-          // Persist/sync customer profile to live Google Sheets
+          // Persist/sync customer profile & session to live Google Sheets
           GasAdapter.execute('verifyCustomerOTP', {
             mobileNumber: payload.mobileNumber,
             customerName: res.session?.customerName || payload.customerName,
@@ -135,6 +162,26 @@ export class RequestDispatcher {
         }
 
         case 'resolveTableQR': {
+          if (typeof window !== 'undefined') {
+            const liveRes = await GasAdapter.execute('resolveTableQR', { token: payload.token });
+            if (liveRes.success && liveRes.data?.table) {
+              QRService.syncQRRecord(liveRes.data.table.Table_ID, payload.token, true);
+              return {
+                success: true,
+                data: liveRes.data,
+                message: liveRes.message || liveRes.data.message,
+              };
+            }
+            const errCode = liveRes.error?.code;
+            if (errCode && errCode !== 'UNKNOWN_ACTION' && errCode !== 'GAS_CONNECTION_ERROR') {
+              return {
+                success: false,
+                error: liveRes.error,
+                data: liveRes.data,
+              };
+            }
+          }
+
           const res = QRService.resolveTableByToken(payload.token);
           return res.success
             ? { success: true, data: res, message: res.message }
@@ -582,17 +629,35 @@ export class RequestDispatcher {
           }
 
           case 'getAllTableQRs': {
+            if (typeof window !== 'undefined') {
+              const liveRes = await GasAdapter.execute('getAllTableQRs', { baseUrl: payload.baseUrl });
+              if (liveRes.success && Array.isArray(liveRes.data)) {
+                liveRes.data.forEach((rec: any) => {
+                  QRService.syncQRRecord(rec.tableId, rec.token, rec.isActive, rec.generatedAt);
+                });
+                return { success: true, data: liveRes.data };
+              }
+            }
             const qrs = QRService.getAllTableQRs(payload.baseUrl);
             return { success: true, data: qrs };
           }
 
           case 'regenerateTableQR': {
             const token = QRService.generateTableToken(payload.tableId, true);
+            if (typeof window !== 'undefined') {
+              await GasAdapter.execute('regenerateTableQR', { tableId: payload.tableId, token }).catch(() => {});
+            }
             return { success: true, data: { token }, message: `New QR token generated for ${payload.tableId}.` };
           }
 
           case 'toggleTableQR': {
             const res = QRService.toggleTableQR(payload.tableId, Boolean(payload.isActive));
+            if (typeof window !== 'undefined') {
+              await GasAdapter.execute('toggleTableQR', {
+                tableId: payload.tableId,
+                isActive: Boolean(payload.isActive),
+              }).catch(() => {});
+            }
             return { success: true, message: res.message };
           }
 

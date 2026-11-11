@@ -24,7 +24,36 @@ export class QRService {
   private static readonly QR_SETTING_PREFIX = 'TABLE_QR_';
 
   /**
-   * Generates a deterministic or freshly rotated cryptographically-backed token for a specific table.
+   * Computes a consistent default token for a table so cross-device QR scans resolve
+   * reliably even before an admin manually opens the QR settings tab.
+   */
+  public static computeDefaultToken(tableId: string): string {
+    const cleanId = tableId.replace(/[^A-Z0-9]/gi, '');
+    const hex = hashOTP(`SAVOR_DEFAULT_TABLE_QR_${tableId}`).slice(0, 16).toUpperCase();
+    return `TBLQR_${cleanId}_${hex}`;
+  }
+
+  /**
+   * Upserts a QR setting record into local mockDb (used for live GAS sync too).
+   */
+  public static syncQRRecord(tableId: string, token: string, isActive = true, generatedAt = new Date().toISOString()): void {
+    const key = `${this.QR_SETTING_PREFIX}${tableId}`;
+    const record = { token, tableId, isActive, generatedAt };
+    const existing = db.findOne('Restaurant_Settings', (s) => s.Setting_Key === key);
+    if (existing) {
+      db.updateRow('Restaurant_Settings', 'Setting_Key', key, {
+        Setting_Value: JSON.stringify(record),
+      });
+    } else {
+      db.insertRow('Restaurant_Settings', {
+        Setting_Key: key,
+        Setting_Value: JSON.stringify(record),
+      });
+    }
+  }
+
+  /**
+   * Generates a deterministic default or freshly rotated cryptographically-backed token for a specific table.
    */
   public static generateTableToken(tableId: string, forceRegenerate = false): string {
     const key = `${this.QR_SETTING_PREFIX}${tableId}`;
@@ -39,26 +68,11 @@ export class QRService {
       }
     }
 
-    const entropy = `${tableId}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    const token = `TBLQR_${tableId.replace(/[^A-Z0-9]/gi, '')}_${hashOTP(entropy).slice(0, 16).toUpperCase()}`;
+    const token = forceRegenerate
+      ? `TBLQR_${tableId.replace(/[^A-Z0-9]/gi, '')}_${hashOTP(`${tableId}_${Date.now()}_${Math.random().toString(36).slice(2)}`).slice(0, 16).toUpperCase()}`
+      : this.computeDefaultToken(tableId);
 
-    const record = {
-      token,
-      tableId,
-      isActive: true,
-      generatedAt: new Date().toISOString(),
-    };
-
-    if (existing) {
-      db.updateRow('Restaurant_Settings', 'Setting_Key', key, {
-        Setting_Value: JSON.stringify(record),
-      });
-    } else {
-      db.insertRow('Restaurant_Settings', {
-        Setting_Key: key,
-        Setting_Value: JSON.stringify(record),
-      });
-    }
+    this.syncQRRecord(tableId, token, true, new Date().toISOString());
 
     return token;
   }
@@ -144,9 +158,11 @@ export class QRService {
     }
 
     const settings = db.findRows('Restaurant_Settings', (s) => s.Setting_Key.startsWith(this.QR_SETTING_PREFIX));
+    const overriddenTableIds = new Set<string>();
     let matchedRecord: any = null;
 
     for (const s of settings) {
+      overriddenTableIds.add(s.Setting_Key.replace(this.QR_SETTING_PREFIX, ''));
       try {
         const parsed = JSON.parse(s.Setting_Value);
         if (parsed.token === token) {
@@ -158,7 +174,17 @@ export class QRService {
       }
     }
 
-    // Fallback check if token not yet persisted in settings (e.g., direct initial seed)
+    // Cross-device fallback for deterministic default table QR tokens not overridden/disabled
+    if (!matchedRecord) {
+      const tables = db.getRows('Tables');
+      for (const tbl of tables) {
+        if (!overriddenTableIds.has(tbl.Table_ID) && this.computeDefaultToken(tbl.Table_ID) === token) {
+          matchedRecord = { token, tableId: tbl.Table_ID, isActive: true };
+          break;
+        }
+      }
+    }
+
     if (!matchedRecord) {
       return { success: false, message: 'QR token expired, regenerated, or not recognized.' };
     }

@@ -62,6 +62,43 @@ export class AuthService {
     let customer = db.findOne('Customers', (c) => c.Mobile_Number === mobile);
     let isNewCustomer = false;
 
+    // Returning guest lookup in Google Sheets if not cached in this browser's mockDb yet
+    if (!customer && (!params.customerName || !params.email) && typeof window !== 'undefined') {
+      const lookupGas = await EmailService.dispatchLiveGasOtp({
+        mobileNumber: mobile,
+      });
+
+      if (lookupGas.cooldown) {
+        return {
+          success: false,
+          message: lookupGas.message || 'Please wait before requesting a new OTP.',
+          cooldownRemainingSeconds: lookupGas.cooldownRemainingSeconds,
+        };
+      }
+
+      if (lookupGas.success && lookupGas.otpHash && lookupGas.email) {
+        const custId = lookupGas.customerId || `CUST-${Date.now().toString().slice(-6)}`;
+        db.insertRow('Customers', {
+          Customer_ID: custId,
+          Customer_Name: lookupGas.customerName || 'Valued Guest',
+          Mobile_Number: mobile,
+          Email: lookupGas.email,
+          Created_At: new Date().toISOString(),
+          OTP_Hash: lookupGas.otpHash,
+          OTP_Expiry: lookupGas.otpExpiry || new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+          OTP_Attempts: 0,
+          OTP_Last_Sent_At: new Date().toISOString(),
+          OTP_Session_ID: '',
+        });
+        return {
+          success: true,
+          message: `A 6-digit verification code has been sent to your email (${lookupGas.email}). Please check your inbox.`,
+          customerId: custId,
+          isNewCustomer: false,
+        };
+      }
+    }
+
     if (!customer) {
       // New customer must supply name and valid email
       if (!params.customerName || !params.email) {
@@ -116,6 +153,23 @@ export class AuthService {
       customerName: customer.Customer_Name,
       mobileNumber: mobile,
     });
+
+    if (gasResult.cooldown) {
+      return {
+        success: false,
+        message: gasResult.message || 'Please wait before requesting a new OTP.',
+        cooldownRemainingSeconds: gasResult.cooldownRemainingSeconds,
+      };
+    }
+
+    if (typeof window !== 'undefined') {
+      if (gasResult.stubDetected || (!gasResult.success && gasResult.message)) {
+        return {
+          success: false,
+          message: gasResult.message || 'Unable to send OTP email via Google Apps Script.',
+        };
+      }
+    }
 
     if (gasResult && gasResult.success && gasResult.otpHash) {
       otpHash = gasResult.otpHash;
@@ -217,6 +271,49 @@ export class AuthService {
       success: true,
       message: 'Authentication successful.',
       session,
+    };
+  }
+
+  /**
+   * Synchronizes a verified GAS customer OTP session into local mockDb so protected actions validate cleanly.
+   */
+  public static syncCustomerSessionFromGas(params: {
+    sessionId: string;
+    customerId: string;
+    customerName: string;
+    mobileNumber: string;
+    email: string;
+  }): CustomerSession {
+    const mobile = params.mobileNumber.trim();
+    const existing = db.findOne('Customers', (c) => c.Mobile_Number === mobile || c.Customer_ID === params.customerId);
+    if (existing) {
+      db.updateRow('Customers', 'Customer_ID', existing.Customer_ID, {
+        OTP_Hash: '',
+        OTP_Expiry: '',
+        OTP_Attempts: 0,
+        OTP_Session_ID: params.sessionId,
+      });
+    } else {
+      db.insertRow('Customers', {
+        Customer_ID: params.customerId,
+        Customer_Name: params.customerName || 'Guest',
+        Mobile_Number: mobile,
+        Email: params.email || '',
+        Created_At: new Date().toISOString(),
+        OTP_Hash: '',
+        OTP_Expiry: '',
+        OTP_Attempts: 0,
+        OTP_Last_Sent_At: '',
+        OTP_Session_ID: params.sessionId,
+      });
+    }
+    return {
+      sessionId: params.sessionId,
+      customerId: params.customerId,
+      customerName: params.customerName,
+      mobileNumber: mobile,
+      email: params.email,
+      role: 'Customer',
     };
   }
 

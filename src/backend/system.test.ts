@@ -528,3 +528,16 @@ test('14. Persistent Draft Cart Restoration Across Sessions', async () => {
   const afterClear = await CartService.getDraftCart(custId);
   assert.equal(afterClear.data.items.length, 0);
 });
+
+test('15. Cross-Device Deterministic Table QR Resolution', () => {
+  // Simulate a fresh browser scanning a deterministic default QR token before Admin opens QR settings
+  const defaultToken = QRService.computeDefaultToken('TBL-07');
+  assert.ok(defaultToken.startsWith('TBLQR_TBL07_'));
+
+  // Remove any cached TABLE_QR_TBL-07 setting to simulate cold device state
+  db.deleteRow('Restaurant_Settings', 'Setting_Key', 'TABLE_QR_TBL-07');
+
+  const resolved = QRService.resolveTableByToken(defaultToken);
+  assert.equal(resolved.success, true, 'Default QR token should resolve on a fresh device');
+  assert.equal(resolved.table?.Table_ID, 'TBL-07');
+});
