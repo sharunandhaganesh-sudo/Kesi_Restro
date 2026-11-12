@@ -26,7 +26,7 @@ var OTP_CONFIG = {
   RESEND_COOLDOWN_SECONDS: 60,
   MAX_FAILED_ATTEMPTS: 3,
   DEFAULT_SECRET: "savor_restaurant_32byte_secure_secret_key_2026",
-  SENDER_NAME: "SAVOR Restaurant Guest Services"
+  SENDER_NAME: "Treat & Taste Family Restaurant"
 };
 
 /**
@@ -146,16 +146,16 @@ function sendOtpEmail(recipientEmail, otpCode, recipientName) {
   }
   
   var displayName = recipientName ? recipientName.trim() : "Valued Guest";
-  var subject = "Your SAVOR Verification Code: " + otpCode;
+  var subject = "Your Treat & Taste Verification Code: " + otpCode;
   
   // Plain text fallback
   var plainBody = 
     "Hello " + displayName + ",\n\n" +
-    "Your 6-digit verification code for SAVOR Restaurant is:\n\n" +
+    "Your 6-digit verification code for Treat & Taste — Family Restaurant is:\n\n" +
     "  " + otpCode + "\n\n" +
     "This code will expire in 5 minutes.\n" +
     "Do not share this code with anyone. Restaurant staff will never ask for your verification code.\n\n" +
-    "— SAVOR Smart Restaurant Team";
+    "— Treat & Taste Family Restaurant Team";
   
   // Apple-inspired responsive HTML email template
   var htmlBody = 
@@ -165,41 +165,41 @@ function sendOtpEmail(recipientEmail, otpCode, recipientName) {
     '<meta charset="utf-8">' +
     '<meta name="viewport" content="width=device-width, initial-scale=1.0">' +
     '</head>' +
-    '<body style="margin: 0; padding: 0; background-color: #F5F5F7; font-family: -apple-system, BlinkMacSystemFont, \'Segoe UI\', Roboto, Helvetica, Arial, sans-serif; color: #1D1D1F;">' +
-    '  <table border="0" cellpadding="0" cellspacing="0" width="100%" style="table-layout: fixed; background-color: #F5F5F7; padding: 40px 16px;">' +
+    '<body style="margin: 0; padding: 0; background-color: #FFF9F0; font-family: -apple-system, BlinkMacSystemFont, \'Segoe UI\', Roboto, Helvetica, Arial, sans-serif; color: #2D1609;">' +
+    '  <table border="0" cellpadding="0" cellspacing="0" width="100%" style="table-layout: fixed; background-color: #FFF9F0; padding: 40px 16px;">' +
     '    <tr>' +
     '      <td align="center">' +
-    '        <table border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 520px; background-color: #FFFFFF; border-radius: 24px; border: 1px solid #D2D2D7; overflow: hidden; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.04);">' +
+    '        <table border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 520px; background-color: #FFFFFF; border-radius: 24px; border: 1px solid #E6D5C3; overflow: hidden; box-shadow: 0 4px 20px rgba(59, 26, 8, 0.06);">' +
     '          <!-- Header -->' +
     '          <tr>' +
-    '            <td style="padding: 32px 32px 16px 32px; text-align: center; border-bottom: 1px solid #F0F0F2;">' +
-    '              <div style="font-size: 13px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: #0071E3; margin-bottom: 4px;">SAVOR</div>' +
-    '              <div style="font-size: 18px; font-weight: 600; color: #1D1D1F;">Smart Restaurant Management System</div>' +
+    '            <td style="padding: 32px 32px 16px 32px; text-align: center; border-bottom: 1px solid #FDF4E7;">' +
+    '              <div style="font-size: 16px; font-weight: 800; letter-spacing: 1px; color: #3B1A08; margin-bottom: 4px;">Treat <span style="color:#F56A00;">&amp;</span> Taste</div>' +
+    '              <div style="font-size: 11px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: #F56A00;">Family Restaurant</div>' +
     '            </td>' +
     '          </tr>' +
     '          <!-- Content -->' +
     '          <tr>' +
     '            <td style="padding: 32px 32px 24px 32px;">' +
-    '              <p style="margin: 0 0 16px 0; font-size: 15px; line-height: 1.5; color: #1D1D1F;">Hello <strong>' + displayName + '</strong>,</p>' +
-    '              <p style="margin: 0 0 24px 0; font-size: 14px; line-height: 1.5; color: #6E6E73;">Use the verification code below to securely sign in to your guest portal, view your dining queue, or place food orders.</p>' +
+    '              <p style="margin: 0 0 16px 0; font-size: 15px; line-height: 1.5; color: #2D1609;">Hello <strong>' + displayName + '</strong>,</p>' +
+    '              <p style="margin: 0 0 24px 0; font-size: 14px; line-height: 1.5; color: #735847;">Use the verification code below to securely sign in to your guest portal, view your dining queue, or place food orders.</p>' +
     '              ' +
     '              <!-- OTP Box -->' +
-    '              <div style="background-color: #F5F5F7; border: 1px solid #D2D2D7; border-radius: 16px; padding: 24px; text-align: center; margin: 24px 0;">' +
-    '                <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; color: #6E6E73; margin-bottom: 8px;">6-Digit Verification Code</div>' +
-    '                <div style="font-size: 38px; font-weight: 700; letter-spacing: 8px; color: #0071E3; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;">' + otpCode + '</div>' +
-    '                <div style="font-size: 12px; font-weight: 500; color: #B76E00; margin-top: 10px;">Expires in 5 minutes</div>' +
+    '              <div style="background-color: #FDF4E7; border: 1px solid #E6D5C3; border-radius: 16px; padding: 24px; text-align: center; margin: 24px 0;">' +
+    '                <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; color: #735847; margin-bottom: 8px;">6-Digit Verification Code</div>' +
+    '                <div style="font-size: 38px; font-weight: 700; letter-spacing: 8px; color: #3B1A08; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;">' + otpCode + '</div>' +
+    '                <div style="font-size: 12px; font-weight: 600; color: #F56A00; margin-top: 10px;">Expires in 5 minutes</div>' +
     '              </div>' +
     '              ' +
-    '              <p style="margin: 20px 0 0 0; font-size: 12px; line-height: 1.6; color: #6E6E73;">' +
-    '                <strong>Security Notice:</strong> If you did not request this verification code, please ignore this email. Never disclose this code to anyone; SAVOR staff will never ask for your code.' +
+    '              <p style="margin: 20px 0 0 0; font-size: 12px; line-height: 1.6; color: #735847;">' +
+    '                <strong>Security Notice:</strong> If you did not request this verification code, please ignore this email. Never disclose this code to anyone; Treat &amp; Taste staff will never ask for your code.' +
     '              </p>' +
     '            </td>' +
     '          </tr>' +
     '          <!-- Footer -->' +
     '          <tr>' +
-    '            <td style="padding: 20px 32px; background-color: #FAFAFC; border-top: 1px solid #F0F0F2; text-align: center; font-size: 11px; color: #86868B;">' +
+    '            <td style="padding: 20px 32px; background-color: #FFF9F0; border-top: 1px solid #E6D5C3; text-align: center; font-size: 11px; color: #735847;">' +
     '              100% Dine-In Experience • Guaranteed 10-Minute Arrival Grace Window<br>' +
-    '              SAVOR Restaurant • Chennai, Tamil Nadu' +
+    '              Treat &amp; Taste — Family Restaurant • Chennai, Tamil Nadu' +
     '            </td>' +
     '          </tr>' +
     '        </table>' +

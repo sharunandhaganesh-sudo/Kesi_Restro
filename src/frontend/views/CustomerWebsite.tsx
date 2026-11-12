@@ -12,6 +12,8 @@ import React, { useState, useEffect } from 'react';
 import QRCode from 'qrcode';
 import { motion, AnimatePresence } from 'motion/react';
 import { DishImage } from '../components/DishImage';
+import { BrandLogo } from '../components/BrandLogo';
+import { BRAND_CONFIG } from '../../config/branding';
 import { RequestDispatcher } from '../../backend/dispatcher';
 import { UserSessionState, MenuItem, CartItem } from '../types';
 import {
@@ -33,6 +35,7 @@ import {
   RefreshCw,
   Mail,
   Zap,
+  MessageSquareText,
 } from 'lucide-react';
 
 interface CustomerWebsiteProps {
@@ -82,14 +85,23 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [cart, setCart] = useState<CartItem[]>([]);
+  const [specialInstructions, setSpecialInstructions] = useState<string>('');
+  const [placingOrder, setPlacingOrder] = useState<boolean>(false);
   const [isCartOpen, setIsCartOpen] = useState<boolean>(false);
   const [isPaymentOpen, setIsPaymentOpen] = useState<boolean>(false);
   const [utrInput, setUtrInput] = useState<string>('');
 
-  // Feedback states
-  const [rating, setRating] = useState<number>(5);
+  // Multi-rating Feedback states
+  const [selectedFeedbackOrderId, setSelectedFeedbackOrderId] = useState<string>('');
+  const [overallRating, setOverallRating] = useState<number>(5);
+  const [foodQualityRating, setFoodQualityRating] = useState<number>(5);
+  const [serviceRating, setServiceRating] = useState<number>(5);
+  const [cleanlinessRating, setCleanlinessRating] = useState<number>(5);
+  const [feedbackName, setFeedbackName] = useState<string>('');
   const [feedbackComment, setFeedbackComment] = useState<string>('');
   const [feedbackSubmitted, setFeedbackSubmitted] = useState<boolean>(false);
+  const [feedbackLoading, setFeedbackLoading] = useState<boolean>(false);
+  const [customerFeedbacks, setCustomerFeedbacks] = useState<any[]>([]);
   const [customerHistory, setCustomerHistory] = useState<any[]>([]);
   const [copiedUpi, setCopiedUpi] = useState<boolean>(false);
   const [dynamicUpiQrUrl, setDynamicUpiQrUrl] = useState<string>('');
@@ -175,10 +187,20 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
 
   async function loadCustomerActiveBooking(sessionId: string) {
     try {
-      const historyRes = await RequestDispatcher.dispatch({
-        action: 'getCustomerHistory',
-        sessionId: sessionId,
-      });
+      const [historyRes, fbRes] = await Promise.all([
+        RequestDispatcher.dispatch({
+          action: 'getCustomerHistory',
+          sessionId: sessionId,
+        }),
+        RequestDispatcher.dispatch({
+          action: 'getCustomerFeedbacks',
+          sessionId: sessionId,
+        }),
+      ]);
+
+      if (fbRes.success && Array.isArray(fbRes.data)) {
+        setCustomerFeedbacks(fbRes.data);
+      }
 
       if (historyRes.success && Array.isArray(historyRes.data) && historyRes.data.length > 0) {
         setCustomerHistory(historyRes.data);
@@ -245,14 +267,23 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
 
   async function refreshBookingDetails() {
     if (!activeBooking?.Booking_ID || !session?.sessionId) return;
-    const res = await RequestDispatcher.dispatch({
-      action: 'getBookingDetails',
-      sessionId: session.sessionId,
-      payload: { bookingId: activeBooking.Booking_ID },
-    });
+    const [res, fbRes] = await Promise.all([
+      RequestDispatcher.dispatch({
+        action: 'getBookingDetails',
+        sessionId: session.sessionId,
+        payload: { bookingId: activeBooking.Booking_ID },
+      }),
+      RequestDispatcher.dispatch({
+        action: 'getCustomerFeedbacks',
+        sessionId: session.sessionId,
+      }),
+    ]);
     if (res.success && res.data) {
       setBookingDetails(res.data);
       setActiveBooking(res.data.booking);
+    }
+    if (fbRes.success && Array.isArray(fbRes.data)) {
+      setCustomerFeedbacks(fbRes.data);
     }
   }
 
@@ -443,12 +474,13 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
 
   // Submit Order
   async function handleSubmitOrder() {
-    if (cart.length === 0) return;
+    if (cart.length === 0 || placingOrder) return;
     if (!activeBooking?.Booking_ID || !session?.sessionId) {
       showToast('error', 'Please create or join a booking visit before placing orders.');
       return;
     }
 
+    setPlacingOrder(true);
     const itemsPayload = cart.map((i) => ({
       foodId: i.food.Food_ID,
       quantity: i.quantity,
@@ -460,16 +492,19 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
       payload: {
         bookingId: activeBooking.Booking_ID,
         items: itemsPayload,
+        specialInstructions: specialInstructions.trim(),
       },
     });
+    setPlacingOrder(false);
 
     if (res.success) {
       setCart([]);
+      setSpecialInstructions('');
       setIsCartOpen(false);
-      showToast('success', 'Order submitted! Kitchen preparation starts after staff authorization.');
+      showToast('success', 'Order confirmed & sent directly to Kitchen!');
       refreshBookingDetails();
     } else {
-      showToast('error', res.error?.message || 'Failed to submit order.');
+      showToast('error', res.error?.message || 'Failed to place order.');
     }
   }
 
@@ -502,25 +537,36 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
     }
   }
 
-  // Submit Feedback
-  async function handleSubmitFeedback(e: React.FormEvent) {
+  // Submit Multi-Rating Order Feedback
+  async function handleSubmitFeedback(e: React.FormEvent, targetOrderId?: string) {
     e.preventDefault();
-    if (!activeBooking?.Booking_ID || !session?.sessionId) return;
+    if (!activeBooking?.Booking_ID || !session?.sessionId || feedbackLoading) return;
 
+    setFeedbackLoading(true);
     const res = await RequestDispatcher.dispatch({
       action: 'submitFeedback',
       sessionId: session.sessionId,
       payload: {
+        orderId: targetOrderId || selectedFeedbackOrderId || undefined,
         bookingId: activeBooking.Booking_ID,
-        rating,
-        comment: feedbackComment,
+        customerName: (feedbackName || session.name || '').trim(),
+        overallRating,
+        foodQualityRating,
+        serviceRating,
+        cleanlinessRating,
+        comments: feedbackComment.trim(),
+        // backward compat aliases
+        rating: overallRating,
+        comment: feedbackComment.trim(),
       },
     });
+    setFeedbackLoading(false);
 
     if (res.success) {
       setFeedbackSubmitted(true);
-      showToast('success', 'Thank you for your rating and feedback!');
-      refreshBookingDetails();
+      setFeedbackComment('');
+      showToast('success', 'Thank you! Your feedback has been saved.');
+      await refreshBookingDetails();
     } else {
       showToast('error', res.error?.message || 'Feedback submission failed.');
     }
@@ -541,8 +587,8 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
   });
 
   return (
-    <div className="min-h-screen bg-[#F5F5F7] text-[#1D1D1F] pb-24">
-      {/* Apple-Style Toast Notification */}
+    <div className="min-h-screen bg-[#FFF9F0] text-[#3B1A08] pb-24">
+      {/* Toast Notification */}
       {notice && (
         <div
           className={`fixed top-20 right-4 z-50 flex items-center space-x-2 px-4 py-3 rounded-2xl shadow-xl border text-xs font-semibold backdrop-blur-md ${
@@ -561,19 +607,20 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
       )}
 
       {/* Top Banner / Customer Identification Strip */}
-      <div className="bg-white/80 backdrop-blur-md border-b border-[#D2D2D7]/80 py-3 px-4 sm:px-6">
+      <div className="bg-white/90 backdrop-blur-md border-b border-[#E6D5C3] py-3 px-4 sm:px-6">
         <div className="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
-          <div className="flex items-center space-x-2">
-            <span className="font-bold text-[#0071E3]">
-              Customer Portal
+          <div className="flex items-center space-x-2.5">
+            <BrandLogo size="sm" variant="icon" />
+            <span className="font-bold text-[#F56A00]">
+              {BRAND_CONFIG.name} Guest Portal
             </span>
-            <span className="text-[#6E6E73]">•</span>
+            <span className="text-[#6B4C35]">•</span>
             {session ? (
-              <span className="text-[#1D1D1F] font-medium">
-                Signed in as <strong className="text-[#1D1D1F] font-semibold">{session.name}</strong> ({session.mobile})
+              <span className="text-[#3B1A08] font-medium">
+                Signed in as <strong className="text-[#3B1A08] font-semibold">{session.name}</strong> ({session.mobile})
               </span>
             ) : (
-              <span className="text-[#6E6E73]">
+              <span className="text-[#6B4C35]">
                 Sign in with mobile number & Email OTP to book tables and order food
               </span>
             )}
@@ -582,12 +629,12 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
           {/* Quick Demo Customer Sign-in buttons */}
           {!session && (
             <div className="flex items-center space-x-2">
-              <span className="text-[11px] text-[#6E6E73] font-medium">Quick Demo:</span>
+              <span className="text-[11px] text-[#6B4C35] font-medium">Quick Demo:</span>
               <button
                 onClick={() =>
                   quickLoginCustomer('Ananya Sharma', '9876543210', 'ananya.sharma@example.com')
                 }
-                className="px-3 py-1 rounded-full bg-[#0071E3] hover:bg-[#0077ED] text-white text-[11px] font-semibold shadow-xs transition cursor-pointer"
+                className="px-3 py-1 rounded-full bg-[#F56A00] hover:bg-[#D95800] text-white text-[11px] font-semibold shadow-xs transition cursor-pointer"
               >
                 Ananya (9876543210)
               </button>
@@ -595,7 +642,7 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
                 onClick={() =>
                   quickLoginCustomer('Vikram Patel', '9876543211', 'vikram.patel@example.com')
                 }
-                className="px-3 py-1 rounded-full bg-white hover:bg-[#F5F5F7] border border-[#D2D2D7] text-[#1D1D1F] text-[11px] font-semibold shadow-xs transition cursor-pointer"
+                className="px-3 py-1 rounded-full bg-[#FDF4E7] hover:bg-[#F5E6D3] border border-[#E6D5C3] text-[#3B1A08] text-[11px] font-semibold shadow-xs transition cursor-pointer"
               >
                 Vikram (Walk-in)
               </button>
@@ -614,42 +661,42 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
         )}
 
         {scannedTable && (
-          <div className="bg-[#FFF8F3] border-2 border-[#650B20] text-[#292323] px-5 py-4 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm">
+          <div className="bg-[#FDF4E7] border-2 border-[#3B1A08] text-[#3B1A08] px-5 py-4 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm">
             <div className="flex items-center space-x-3">
-              <div className="w-10 h-10 rounded-xl bg-[#650B20] text-white flex items-center justify-center">
+              <div className="w-10 h-10 rounded-xl bg-[#3B1A08] text-[#F4B41A] flex items-center justify-center shrink-0">
                 <QrCode className="w-5 h-5" />
               </div>
               <div>
-                <h3 className="text-sm font-bold text-[#650B20]">
-                  Ordering from Table {scannedTable.Table_Number} (Capacity: {scannedTable.Seating_Capacity} Guests)
+                <h3 className="text-sm font-bold text-[#3B1A08]">
+                  {BRAND_CONFIG.name} • Ordering from Table {scannedTable.Table_Number} (Capacity: {scannedTable.Seating_Capacity} Guests)
                 </h3>
-                <p className="text-xs text-[#6E6E73]">
-                  Table automatically identified via verified QR scan. Your booking and food order will lock to Table {scannedTable.Table_Number}.
+                <p className="text-xs text-[#6B4C35]">
+                  Table automatically identified via verified QR scan. Your booking and food orders go straight to Kitchen for Table {scannedTable.Table_Number}.
                 </p>
               </div>
             </div>
-            <span className="px-3 py-1 rounded-full bg-[#D9AA49]/20 text-[#650B20] text-[11px] font-bold self-start sm:self-center">
+            <span className="px-3 py-1 rounded-full bg-[#F4B41A]/30 text-[#3B1A08] text-[11px] font-bold self-start sm:self-center">
               Status: {scannedTable.Table_Status}
             </span>
           </div>
         )}
 
-        {/* If Not Signed In: Apple-Style Login Card */}
+        {/* If Not Signed In: Customer Sign In Card */}
         {!session && (
-          <div className="bg-white rounded-3xl p-6 sm:p-10 shadow-xs border border-[#D2D2D7] max-w-lg mx-auto">
-            <div className="text-center space-y-2 mb-8">
-              <div className="w-12 h-12 rounded-2xl bg-[#0071E3]/10 flex items-center justify-center text-[#0071E3] mx-auto mb-3">
-                <Users className="w-6 h-6 stroke-[2.2]" />
+          <div className="bg-white rounded-3xl p-6 sm:p-10 shadow-sm border border-[#E6D5C3] max-w-lg mx-auto">
+            <div className="text-center space-y-2.5 mb-8">
+              <div className="flex justify-center">
+                <BrandLogo size="md" />
               </div>
-              <h2 className="text-2xl font-bold tracking-tight text-[#1D1D1F]">Customer Sign In</h2>
-              <p className="text-xs text-[#6E6E73]">
+              <h2 className="text-2xl font-bold tracking-tight text-[#3B1A08] pt-1">Customer Sign In</h2>
+              <p className="text-xs text-[#6B4C35]">
                 We'll verify your mobile number with a secure 6-digit email OTP.
               </p>
             </div>
 
             <form onSubmit={handleRequestOTP} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-[#1D1D1F] mb-1.5">
+                <label className="block text-xs font-semibold text-[#3B1A08] mb-1.5">
                   10-Digit Mobile Number
                 </label>
                 <input
@@ -659,25 +706,25 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
                   placeholder="e.g. 9876543210"
                   value={mobileNumber}
                   onChange={(e) => setMobileNumber(e.target.value.replace(/\D/g, ''))}
-                  className="w-full px-4 py-3 rounded-xl border border-[#D2D2D7] bg-[#F5F5F7]/50 focus:bg-white focus:outline-none focus:border-[#0071E3] focus:ring-2 focus:ring-[#0071E3]/20 text-sm font-medium transition"
+                  className="w-full px-4 py-3 rounded-xl border border-[#E6D5C3] bg-[#FFF9F0]/60 focus:bg-white focus:outline-none focus:border-[#F56A00] focus:ring-2 focus:ring-[#F56A00]/20 text-sm font-medium transition"
                 />
               </div>
 
               {isNewCustomer && (
                 <>
                   <div>
-                    <label className="block text-xs font-semibold text-[#1D1D1F] mb-1.5">Full Name</label>
+                    <label className="block text-xs font-semibold text-[#3B1A08] mb-1.5">Full Name</label>
                     <input
                       type="text"
                       required
                       placeholder="e.g. Jane Doe"
                       value={customerName}
                       onChange={(e) => setCustomerName(e.target.value)}
-                      className="w-full px-4 py-3 rounded-xl border border-[#D2D2D7] bg-[#F5F5F7]/50 focus:bg-white focus:outline-none focus:border-[#0071E3] focus:ring-2 focus:ring-[#0071E3]/20 text-sm font-medium transition"
+                      className="w-full px-4 py-3 rounded-xl border border-[#E6D5C3] bg-[#FFF9F0]/60 focus:bg-white focus:outline-none focus:border-[#F56A00] focus:ring-2 focus:ring-[#F56A00]/20 text-sm font-medium transition"
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold text-[#1D1D1F] mb-1.5">
+                    <label className="block text-xs font-semibold text-[#3B1A08] mb-1.5">
                       Email Address (for OTP Delivery)
                     </label>
                     <input
@@ -686,7 +733,7 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
                       placeholder="e.g. jane@example.com"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      className="w-full px-4 py-3 rounded-xl border border-[#D2D2D7] bg-[#F5F5F7]/50 focus:bg-white focus:outline-none focus:border-[#0071E3] focus:ring-2 focus:ring-[#0071E3]/20 text-sm font-medium transition"
+                      className="w-full px-4 py-3 rounded-xl border border-[#E6D5C3] bg-[#FFF9F0]/60 focus:bg-white focus:outline-none focus:border-[#F56A00] focus:ring-2 focus:ring-[#F56A00]/20 text-sm font-medium transition"
                     />
                   </div>
                 </>
@@ -702,7 +749,7 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
               <button
                 type="submit"
                 disabled={authLoading}
-                className="w-full py-3.5 rounded-full bg-[#0071E3] hover:bg-[#0077ED] text-white font-semibold text-sm shadow-xs transition-all duration-200 disabled:opacity-50 cursor-pointer active:scale-98"
+                className="w-full py-3.5 rounded-full bg-[#F56A00] hover:bg-[#D95800] text-white font-semibold text-sm shadow-xs transition-all duration-200 disabled:opacity-50 cursor-pointer active:scale-98"
               >
                 {authLoading ? 'Sending OTP...' : 'Send Verification OTP'}
               </button>
@@ -710,7 +757,7 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
           </div>
         )}
 
-        {/* OTP Modal with Apple Dialog Styling */}
+        {/* OTP Modal */}
         <AnimatePresence>
           {showOtpModal && (
             <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
@@ -719,37 +766,37 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.96, y: 12 }}
                 transition={{ duration: 0.2 }}
-                className="bg-white rounded-3xl max-w-md w-full p-6 sm:p-8 space-y-4 shadow-2xl border border-[#D2D2D7]"
+                className="bg-white rounded-3xl max-w-md w-full p-6 sm:p-8 space-y-4 shadow-2xl border border-[#E6D5C3]"
               >
                 <div className="flex items-center justify-between">
                   <div className="flex items-center space-x-2.5">
-                    <div className="w-9 h-9 rounded-full bg-[#0071E3]/10 flex items-center justify-center text-[#0071E3]">
+                    <div className="w-9 h-9 rounded-full bg-[#F56A00]/10 flex items-center justify-center text-[#F56A00]">
                       <Mail className="w-4 h-4" />
                     </div>
-                    <h3 className="font-bold text-lg text-[#1D1D1F]">
+                    <h3 className="font-bold text-lg text-[#3B1A08]">
                       Enter 6-Digit Email OTP
                     </h3>
                   </div>
                   <button
                     onClick={() => setShowOtpModal(false)}
-                    className="p-1 rounded-full text-[#6E6E73] hover:text-[#1D1D1F] hover:bg-[#F5F5F7] transition cursor-pointer"
+                    className="p-1 rounded-full text-[#6B4C35] hover:text-[#3B1A08] hover:bg-[#FDF4E7] transition cursor-pointer"
                   >
                     <X className="w-5 h-5" />
                   </button>
                 </div>
 
-                <p className="text-xs text-[#6E6E73]">{otpSentMessage}</p>
+                <p className="text-xs text-[#6B4C35]">{otpSentMessage}</p>
 
                 {/* Real Email Delivery Notice */}
-                <div className="bg-[#F5F5F7] p-4 rounded-2xl border border-[#D2D2D7]/80 flex items-start space-x-3 text-xs">
-                  <div className="w-8 h-8 rounded-xl bg-[#0071E3]/10 text-[#0071E3] flex items-center justify-center flex-shrink-0 mt-0.5">
+                <div className="bg-[#FFF9F0] p-4 rounded-2xl border border-[#E6D5C3] flex items-start space-x-3 text-xs">
+                  <div className="w-8 h-8 rounded-xl bg-[#F56A00]/10 text-[#F56A00] flex items-center justify-center flex-shrink-0 mt-0.5">
                     <Mail className="w-4 h-4" />
                   </div>
                   <div className="space-y-1">
-                    <span className="font-semibold text-[#1D1D1F] block">
-                      Real Email Verification
+                    <span className="font-semibold text-[#3B1A08] block">
+                      {BRAND_CONFIG.name} Email Verification
                     </span>
-                    <p className="text-[#6E6E73] leading-relaxed">
+                    <p className="text-[#6B4C35] leading-relaxed">
                       Please check your Gmail inbox (and spam folder) for the 6-digit code sent via Google Apps Script MailApp. Enter the code below to continue.
                     </p>
                   </div>
@@ -764,9 +811,9 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
                       placeholder="123456"
                       value={otpInput}
                       onChange={(e) => setOtpInput(e.target.value.replace(/\D/g, ''))}
-                      className="w-full text-center tracking-widest font-mono text-2xl py-3.5 rounded-2xl border border-[#D2D2D7] bg-[#F5F5F7] focus:bg-white focus:outline-none focus:border-[#0071E3] focus:ring-2 focus:ring-[#0071E3]/20"
+                      className="w-full text-center tracking-widest font-mono text-2xl py-3.5 rounded-2xl border border-[#E6D5C3] bg-[#FFF9F0] focus:bg-white focus:outline-none focus:border-[#F56A00] focus:ring-2 focus:ring-[#F56A00]/20"
                     />
-                    <span className="block text-[11px] text-[#6E6E73] text-center mt-1.5">
+                    <span className="block text-[11px] text-[#6B4C35] text-center mt-1.5">
                       Valid for 5 minutes • Max 3 attempts
                     </span>
                   </div>
@@ -780,7 +827,7 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
                   <button
                     type="submit"
                     disabled={authLoading || otpInput.length !== 6}
-                    className="w-full py-3.5 rounded-full bg-[#0071E3] hover:bg-[#0077ED] text-white font-semibold text-sm shadow-xs disabled:opacity-50 transition cursor-pointer active:scale-98"
+                    className="w-full py-3.5 rounded-full bg-[#F56A00] hover:bg-[#D95800] text-white font-semibold text-sm shadow-xs disabled:opacity-50 transition cursor-pointer active:scale-98"
                   >
                     {authLoading ? 'Verifying...' : 'Verify & Continue'}
                   </button>
@@ -790,7 +837,7 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
                       type="button"
                       disabled={cooldownSeconds > 0}
                       onClick={handleRequestOTP}
-                      className="text-xs text-[#0071E3] font-semibold hover:underline disabled:text-[#6E6E73]/50 cursor-pointer"
+                      className="text-xs text-[#F56A00] font-semibold hover:underline disabled:text-[#6B4C35]/50 cursor-pointer"
                     >
                       {cooldownSeconds > 0
                         ? `Resend Code in ${cooldownSeconds}s`
@@ -809,21 +856,21 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
             {/* Left: Active Booking / Queue Status */}
             <div className="lg:col-span-5 space-y-4">
               {activeBooking ? (
-                <div className="bg-white rounded-3xl p-6 shadow-xs border border-[#D2D2D7] space-y-4">
-                  <div className="flex items-center justify-between pb-3 border-b border-[#D2D2D7]/60">
+                <div className="bg-white rounded-3xl p-6 shadow-xs border border-[#E6D5C3] space-y-4">
+                  <div className="flex items-center justify-between pb-3 border-b border-[#E6D5C3]">
                     <div>
                       <div className="flex items-center space-x-2">
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-[#6E6E73]">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-[#6B4C35]">
                           Active Visit
                         </span>
                         <button
                           onClick={() => setActiveBooking(null)}
-                          className="text-[11px] text-[#0071E3] hover:underline font-semibold cursor-pointer"
+                          className="text-[11px] text-[#F56A00] hover:underline font-semibold cursor-pointer"
                         >
                           (New / Switch)
                         </button>
                       </div>
-                      <span className="text-base font-bold text-[#1D1D1F]">
+                      <span className="text-base font-bold text-[#3B1A08]">
                         {activeBooking.Booking_ID}
                       </span>
                     </div>
@@ -832,8 +879,8 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
                         activeBooking.Booking_Status === 'Seated'
                           ? 'bg-[#248A3D]/10 text-[#248A3D] border border-[#248A3D]/20'
                           : activeBooking.Booking_Status === 'Arrived'
-                          ? 'bg-[#0071E3]/10 text-[#0071E3] border border-[#0071E3]/20'
-                          : 'bg-[#B76E00]/10 text-[#B76E00] border border-[#B76E00]/20'
+                          ? 'bg-[#F56A00]/10 text-[#F56A00] border border-[#F56A00]/20'
+                          : 'bg-[#F4B41A]/20 text-[#92400E] border border-[#F4B41A]/40'
                       }`}
                     >
                       {activeBooking.Booking_Status}
@@ -842,21 +889,21 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
 
                   {/* Visit Specifics */}
                   <div className="grid grid-cols-2 gap-2.5 text-xs">
-                    <div className="p-3 rounded-2xl bg-[#F5F5F7]">
-                      <span className="text-[#6E6E73] block text-[10px] font-medium">Visit Type</span>
-                      <strong className="text-[#1D1D1F] font-semibold">{activeBooking.Visit_Type}</strong>
+                    <div className="p-3 rounded-2xl bg-[#FFF9F0]">
+                      <span className="text-[#6B4C35] block text-[10px] font-medium">Visit Type</span>
+                      <strong className="text-[#3B1A08] font-semibold">{activeBooking.Visit_Type}</strong>
                     </div>
-                    <div className="p-3 rounded-2xl bg-[#F5F5F7]">
-                      <span className="text-[#6E6E73] block text-[10px] font-medium">Party Size</span>
-                      <strong className="text-[#1D1D1F] font-semibold">{activeBooking.Party_Size} Guests</strong>
+                    <div className="p-3 rounded-2xl bg-[#FFF9F0]">
+                      <span className="text-[#6B4C35] block text-[10px] font-medium">Party Size</span>
+                      <strong className="text-[#3B1A08] font-semibold">{activeBooking.Party_Size} Guests</strong>
                     </div>
 
                     {bookingDetails?.reservations?.[0] && (
-                      <div className="p-3 rounded-2xl bg-[#F5F5F7] col-span-2">
-                        <span className="text-[#6E6E73] block text-[10px] font-medium">
+                      <div className="p-3 rounded-2xl bg-[#FFF9F0] col-span-2">
+                        <span className="text-[#6B4C35] block text-[10px] font-medium">
                           Reserved Table
                         </span>
-                        <strong className="text-[#0071E3] font-semibold">
+                        <strong className="text-[#F56A00] font-semibold">
                           Table {bookingDetails.reservations[0].Table_ID} (105-Min Blocked Window)
                         </strong>
                       </div>
@@ -867,16 +914,16 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
                   {activeBooking.Visit_Type === 'Walk-in' &&
                     activeBooking.Booking_Status !== 'Seated' &&
                     activeBooking.Booking_Status !== 'Completed' && (
-                      <div className="bg-[#0071E3]/5 p-4 rounded-2xl border border-[#0071E3]/20 space-y-2">
+                      <div className="bg-[#FDF4E7] p-4 rounded-2xl border border-[#F4B41A]/50 space-y-2">
                         <div className="flex items-center justify-between">
-                          <span className="text-xs font-semibold text-[#1D1D1F]">
+                          <span className="text-xs font-semibold text-[#3B1A08]">
                             Live Queue Position:
                           </span>
-                          <span className="text-xl font-mono font-bold text-[#0071E3]">
+                          <span className="text-xl font-mono font-bold text-[#F56A00]">
                             #{queuePosition || 1}
                           </span>
                         </div>
-                        <p className="text-[11px] text-[#6E6E73] leading-snug">
+                        <p className="text-[11px] text-[#6B4C35] leading-snug">
                           Capacity-fit algorithm prioritizes available tables matching your party of{' '}
                           {activeBooking.Party_Size}. Staff will call you shortly.
                         </p>
@@ -888,12 +935,12 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
                     <div className="space-y-2 pt-2">
                       <button
                         onClick={handleConfirmArrival}
-                        className="w-full py-3.5 rounded-full bg-[#0071E3] hover:bg-[#0077ED] text-white font-semibold text-xs shadow-md transition flex items-center justify-center space-x-2 cursor-pointer active:scale-98 animate-pulse"
+                        className="w-full py-3.5 rounded-full bg-[#F56A00] hover:bg-[#D95800] text-white font-semibold text-xs shadow-md transition flex items-center justify-center space-x-2 cursor-pointer active:scale-98 animate-pulse"
                       >
                         <CheckCircle2 className="w-4 h-4" />
                         <span>I'm Arrived at Restaurant</span>
                       </button>
-                      <p className="text-[10px] text-center text-[#6E6E73]">
+                      <p className="text-[10px] text-center text-[#6B4C35]">
                         Confirm within 10-minute grace window to alert host staff and secure your table.
                       </p>
                     </div>
@@ -901,12 +948,12 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
 
                   {/* Arrival Confirmed Notice */}
                   {activeBooking.Booking_Status === 'Arrived' && (
-                    <div className="p-3.5 bg-[#0071E3]/10 border border-[#0071E3]/20 rounded-2xl text-xs text-[#0071E3] space-y-1">
+                    <div className="p-3.5 bg-[#F56A00]/10 border border-[#F56A00]/25 rounded-2xl text-xs text-[#C2410C] space-y-1">
                       <div className="font-semibold flex items-center space-x-1.5">
                         <Clock className="w-3.5 h-3.5" />
                         <span>Arrival Registered (15-Min Staff Window)</span>
                       </div>
-                      <p className="text-[11px] text-[#1D1D1F]/80">
+                      <p className="text-[11px] text-[#3B1A08]/80">
                         Please proceed to the host desk. Staff is verifying your arrival and seating
                         your table.
                       </p>
@@ -920,26 +967,26 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
                         <CheckCircle2 className="w-3.5 h-3.5" />
                         <span>You are Seated</span>
                       </div>
-                      <p className="text-[11px] text-[#1D1D1F]/80">
-                        Browse the menu below to place or add dishes to your meal.
+                      <p className="text-[11px] text-[#3B1A08]/80">
+                        Browse the menu on the right to place orders directly to our Kitchen.
                       </p>
                     </div>
                   )}
 
                   {/* Final Bill Review & Payment CTA */}
                   {bookingDetails?.bill && (
-                    <div className="pt-3 border-t border-[#D2D2D7]/60 space-y-2.5">
+                    <div className="pt-3 border-t border-[#E6D5C3] space-y-2.5">
                       <div className="flex items-center justify-between text-xs">
-                        <span className="text-[#6E6E73] font-medium">Final Bill Total:</span>
-                        <span className="font-bold text-base text-[#1D1D1F]">
+                        <span className="text-[#6B4C35] font-medium">Final Bill Total:</span>
+                        <span className="font-bold text-base text-[#3B1A08]">
                           ₹{bookingDetails.bill.Grand_Total}
                         </span>
                       </div>
                       <button
                         onClick={() => setIsPaymentOpen(true)}
-                        className="w-full py-3 rounded-full bg-[#0071E3] hover:bg-[#0077ED] text-white font-semibold text-xs shadow-xs transition flex items-center justify-center space-x-1.5 cursor-pointer active:scale-98"
+                        className="w-full py-3 rounded-full bg-[#3B1A08] hover:bg-[#2A1104] text-white font-semibold text-xs shadow-xs transition flex items-center justify-center space-x-1.5 cursor-pointer active:scale-98"
                       >
-                        <CreditCard className="w-4 h-4" />
+                        <CreditCard className="w-4 h-4 text-[#F4B41A]" />
                         <span>
                           {bookingDetails.bill.Payment_Status === 'Paid'
                             ? 'View Paid Receipt'
@@ -951,67 +998,138 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
                     </div>
                   )}
 
-                  {/* Feedback dialog for completed visits */}
-                  {activeBooking.Booking_Status === 'Completed' && (
-                    <div className="pt-3 border-t border-[#D2D2D7]/60 space-y-3">
-                      <h4 className="text-xs font-semibold text-[#1D1D1F] flex items-center space-x-1">
-                        <Star className="w-3.5 h-3.5 text-[#B76E00]" />
-                        <span>Rate Your Experience</span>
-                      </h4>
-                      {activeBooking.Feedback_Submitted_At || feedbackSubmitted ? (
-                        <div className="p-3.5 rounded-2xl bg-[#248A3D]/10 text-xs text-[#248A3D] text-center font-medium">
-                          Thank you! Your feedback has been recorded.
+                  {/* Complete Multi-Rating Feedback Form (for Served Orders or Completed Visits) */}
+                  {(() => {
+                    const servedOrders = (bookingDetails?.orders || []).filter(
+                      (o: any) => o.Order_Status === 'Served'
+                    );
+                    const isEligibleForFeedback =
+                      servedOrders.length > 0 || activeBooking.Booking_Status === 'Completed';
+                    if (!isEligibleForFeedback) return null;
+
+                    const activeTargetOrderId =
+                      selectedFeedbackOrderId || (servedOrders[0]?.Order_ID ?? '');
+                    const alreadySubmittedForOrder = activeTargetOrderId
+                      ? customerFeedbacks.some((f: any) => f.Order_ID === activeTargetOrderId)
+                      : Boolean(activeBooking.Feedback_Submitted_At) ||
+                        customerFeedbacks.some((f: any) => f.Booking_ID === activeBooking.Booking_ID);
+
+                    const renderRatingRow = (
+                      label: string,
+                      value: number,
+                      setter: (v: number) => void
+                    ) => (
+                      <div className="flex items-center justify-between gap-2 py-1">
+                        <span className="text-xs font-semibold text-[#3B1A08]">{label}</span>
+                        <div className="flex items-center space-x-1">
+                          {[1, 2, 3, 4, 5].map((star) => (
+                            <button
+                              key={star}
+                              type="button"
+                              onClick={() => setter(star)}
+                              className="p-0.5 focus:outline-none transition transform hover:scale-110 active:scale-95 cursor-pointer"
+                            >
+                              <Star
+                                className={`w-5 h-5 ${
+                                  star <= value
+                                    ? 'fill-[#F4B41A] text-[#F4B41A]'
+                                    : 'text-[#E6D5C3]'
+                                }`}
+                              />
+                            </button>
+                          ))}
                         </div>
-                      ) : (
-                        <form onSubmit={handleSubmitFeedback} className="space-y-3">
-                          <div className="flex items-center space-x-2 justify-center py-1">
-                            {[1, 2, 3, 4, 5].map((star) => (
-                              <button
-                                key={star}
-                                type="button"
-                                onClick={() => setRating(star)}
-                                className="p-1 focus:outline-none transition transform hover:scale-115 active:scale-95 cursor-pointer"
-                              >
-                                <Star
-                                  className={`w-6 h-6 ${
-                                    star <= rating
-                                      ? 'fill-[#B76E00] text-[#B76E00]'
-                                      : 'text-[#D2D2D7]'
-                                  }`}
-                                />
-                              </button>
-                            ))}
+                      </div>
+                    );
+
+                    return (
+                      <div className="pt-4 border-t border-[#E6D5C3] space-y-3">
+                        <h4 className="text-xs font-bold text-[#3B1A08] flex items-center space-x-1.5">
+                          <Star className="w-4 h-4 fill-[#F4B41A] text-[#F4B41A]" />
+                          <span>Share Your {BRAND_CONFIG.name} Feedback</span>
+                        </h4>
+
+                        {servedOrders.length > 0 && (
+                          <div>
+                            <label className="block text-[10px] font-semibold uppercase tracking-wider text-[#6B4C35] mb-1">
+                              Related Order ID
+                            </label>
+                            <select
+                              value={activeTargetOrderId}
+                              onChange={(e) => {
+                                setSelectedFeedbackOrderId(e.target.value);
+                                setFeedbackSubmitted(false);
+                              }}
+                              className="w-full px-3 py-2 rounded-xl border border-[#E6D5C3] bg-[#FFF9F0] text-xs font-mono text-[#3B1A08] focus:outline-none focus:border-[#F56A00]"
+                            >
+                              {servedOrders.map((o: any) => (
+                                <option key={o.Order_ID} value={o.Order_ID}>
+                                  {o.Order_ID} (Served)
+                                </option>
+                              ))}
+                            </select>
                           </div>
-                          <textarea
-                            rows={2}
-                            placeholder="Optional comment about your meal or service..."
-                            value={feedbackComment}
-                            onChange={(e) => setFeedbackComment(e.target.value)}
-                            className="w-full p-3 rounded-xl border border-[#D2D2D7] bg-[#F5F5F7]/50 focus:bg-white text-xs text-[#1D1D1F] focus:outline-none focus:border-[#0071E3]"
-                          />
-                          <button
-                            type="submit"
-                            className="w-full py-2.5 rounded-full bg-[#0071E3] hover:bg-[#0077ED] text-white text-xs font-semibold shadow-xs transition cursor-pointer"
+                        )}
+
+                        {alreadySubmittedForOrder || (feedbackSubmitted && !servedOrders.some((o: any) => o.Order_ID !== activeTargetOrderId && !customerFeedbacks.some((f: any) => f.Order_ID === o.Order_ID))) ? (
+                          <div className="p-3.5 rounded-2xl bg-[#248A3D]/10 border border-[#248A3D]/25 text-xs text-[#248A3D] text-center font-semibold">
+                            Thank you! Your ratings and feedback for {activeTargetOrderId || activeBooking.Booking_ID} have been saved.
+                          </div>
+                        ) : (
+                          <form
+                            onSubmit={(e) => handleSubmitFeedback(e, activeTargetOrderId)}
+                            className="space-y-2.5 bg-[#FFF9F0] p-4 rounded-2xl border border-[#E6D5C3]"
                           >
-                            Submit Feedback
-                          </button>
-                        </form>
-                      )}
-                    </div>
-                  )}
+                            {renderRatingRow('Overall Rating', overallRating, setOverallRating)}
+                            {renderRatingRow('Food Quality', foodQualityRating, setFoodQualityRating)}
+                            {renderRatingRow('Service', serviceRating, setServiceRating)}
+                            {renderRatingRow('Cleanliness', cleanlinessRating, setCleanlinessRating)}
+
+                            <div>
+                              <label className="block text-[11px] font-semibold text-[#3B1A08] mb-1">
+                                Your Name (Optional)
+                              </label>
+                              <input
+                                type="text"
+                                placeholder={session.name || 'Your name'}
+                                value={feedbackName}
+                                onChange={(e) => setFeedbackName(e.target.value)}
+                                className="w-full px-3 py-2 rounded-xl border border-[#E6D5C3] bg-white text-xs text-[#3B1A08] focus:outline-none focus:border-[#F56A00]"
+                              />
+                            </div>
+
+                            <textarea
+                              rows={2}
+                              placeholder="Tell us about your food, hospitality, and dining ambiance..."
+                              value={feedbackComment}
+                              onChange={(e) => setFeedbackComment(e.target.value)}
+                              className="w-full p-3 rounded-xl border border-[#E6D5C3] bg-white text-xs text-[#3B1A08] focus:outline-none focus:border-[#F56A00]"
+                            />
+                            <button
+                              type="submit"
+                              disabled={feedbackLoading}
+                              className="w-full py-2.5 rounded-full bg-[#F56A00] hover:bg-[#D95800] text-white text-xs font-semibold shadow-xs transition disabled:opacity-50 cursor-pointer"
+                            >
+                              {feedbackLoading ? 'Saving Feedback...' : 'Submit Feedback'}
+                            </button>
+                          </form>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
               ) : (
                 /* No Active Booking: Booking Creation Card */
-                <div className="bg-white rounded-3xl p-6 sm:p-7 shadow-xs border border-[#D2D2D7] space-y-4">
+                <div className="bg-white rounded-3xl p-6 sm:p-7 shadow-xs border border-[#E6D5C3] space-y-4">
                   <div className="flex items-center justify-between">
-                    <h3 className="font-bold text-base text-[#1D1D1F]">Start a Visit</h3>
-                    <div className="flex bg-[#E5E5EA]/70 p-1 rounded-full border border-[#D2D2D7]/60">
+                    <h3 className="font-bold text-base text-[#3B1A08]">Start a Visit</h3>
+                    <div className="flex bg-[#FDF4E7] p-1 rounded-full border border-[#E6D5C3]">
                       <button
                         onClick={() => setVisitType('Online')}
                         className={`px-3 py-1 rounded-full text-xs transition cursor-pointer ${
                           visitType === 'Online'
-                            ? 'bg-white text-[#1D1D1F] font-semibold shadow-xs'
-                            : 'text-[#6E6E73] font-medium'
+                            ? 'bg-[#3B1A08] text-white font-semibold shadow-xs'
+                            : 'text-[#6B4C35] font-medium'
                         }`}
                       >
                         Reserve
@@ -1020,8 +1138,8 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
                         onClick={() => setVisitType('Walk-in')}
                         className={`px-3 py-1 rounded-full text-xs transition cursor-pointer ${
                           visitType === 'Walk-in'
-                            ? 'bg-white text-[#1D1D1F] font-semibold shadow-xs'
-                            : 'text-[#6E6E73] font-medium'
+                            ? 'bg-[#3B1A08] text-white font-semibold shadow-xs'
+                            : 'text-[#6B4C35] font-medium'
                         }`}
                       >
                         Walk-in
@@ -1031,7 +1149,7 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
 
                   <div className="space-y-3.5">
                     <div>
-                      <label className="block text-xs font-semibold text-[#1D1D1F] mb-1">
+                      <label className="block text-xs font-semibold text-[#3B1A08] mb-1">
                         Party Size (Guests)
                       </label>
                       <input
@@ -1040,7 +1158,7 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
                         max={16}
                         value={partySize}
                         onChange={(e) => setPartySize(Number(e.target.value))}
-                        className="w-full px-3 py-2.5 rounded-xl border border-[#D2D2D7] bg-[#F5F5F7]/50 focus:bg-white text-xs font-medium focus:outline-none focus:border-[#0071E3]"
+                        className="w-full px-3 py-2.5 rounded-xl border border-[#E6D5C3] bg-[#FFF9F0]/60 focus:bg-white text-xs font-medium focus:outline-none focus:border-[#F56A00]"
                       />
                     </div>
 
@@ -1048,37 +1166,37 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
                       <>
                         <div className="grid grid-cols-2 gap-2">
                           <div>
-                            <label className="block text-xs font-semibold text-[#1D1D1F] mb-1">
+                            <label className="block text-xs font-semibold text-[#3B1A08] mb-1">
                               Date
                             </label>
                             <input
                               type="date"
                               value={reservationDate}
                               onChange={(e) => setReservationDate(e.target.value)}
-                              className="w-full px-3 py-2.5 rounded-xl border border-[#D2D2D7] bg-[#F5F5F7]/50 focus:bg-white text-xs font-medium focus:outline-none focus:border-[#0071E3]"
+                              className="w-full px-3 py-2.5 rounded-xl border border-[#E6D5C3] bg-[#FFF9F0]/60 focus:bg-white text-xs font-medium focus:outline-none focus:border-[#F56A00]"
                             />
                           </div>
                           <div>
-                            <label className="block text-xs font-semibold text-[#1D1D1F] mb-1">
+                            <label className="block text-xs font-semibold text-[#3B1A08] mb-1">
                               Time Slot
                             </label>
                             <input
                               type="time"
                               value={reservationTime}
                               onChange={(e) => setReservationTime(e.target.value)}
-                              className="w-full px-3 py-2.5 rounded-xl border border-[#D2D2D7] bg-[#F5F5F7]/50 focus:bg-white text-xs font-medium focus:outline-none focus:border-[#0071E3]"
+                              className="w-full px-3 py-2.5 rounded-xl border border-[#E6D5C3] bg-[#FFF9F0]/60 focus:bg-white text-xs font-medium focus:outline-none focus:border-[#F56A00]"
                             />
                           </div>
                         </div>
 
                         <div>
-                          <label className="block text-xs font-semibold text-[#1D1D1F] mb-1">
+                          <label className="block text-xs font-semibold text-[#3B1A08] mb-1">
                             Select Table
                           </label>
                           <select
                             value={selectedTableId}
                             onChange={(e) => setSelectedTableId(e.target.value)}
-                            className="w-full px-3 py-2.5 rounded-xl border border-[#D2D2D7] bg-[#F5F5F7]/50 focus:bg-white text-xs font-medium focus:outline-none focus:border-[#0071E3]"
+                            className="w-full px-3 py-2.5 rounded-xl border border-[#E6D5C3] bg-[#FFF9F0]/60 focus:bg-white text-xs font-medium focus:outline-none focus:border-[#F56A00]"
                           >
                             {availableTables.map((t) => (
                               <option key={t.Table_ID} value={t.Table_ID}>
@@ -1092,7 +1210,7 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
 
                     <button
                       onClick={handleCreateBooking}
-                      className="w-full py-3.5 rounded-full bg-[#0071E3] hover:bg-[#0077ED] text-white font-semibold text-xs shadow-xs transition cursor-pointer active:scale-98"
+                      className="w-full py-3.5 rounded-full bg-[#F56A00] hover:bg-[#D95800] text-white font-semibold text-xs shadow-xs transition cursor-pointer active:scale-98"
                     >
                       {visitType === 'Online' ? 'Confirm Reservation' : 'Join Walk-in Queue'}
                     </button>
@@ -1102,90 +1220,83 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
 
               {/* Active Orders Tracker Card */}
               {bookingDetails?.orders && bookingDetails.orders.length > 0 && (
-                <div className="bg-white rounded-3xl p-5 shadow-xs border border-[#D2D2D7] space-y-3">
+                <div className="bg-white rounded-3xl p-5 shadow-xs border border-[#E6D5C3] space-y-3">
                   <div className="flex items-center justify-between">
-                    <span className="font-bold text-sm text-[#1D1D1F]">
+                    <span className="font-bold text-sm text-[#3B1A08]">
                       Your Active Orders ({bookingDetails.orders.length})
                     </span>
                     <button
                       onClick={refreshBookingDetails}
-                      className="text-[#6E6E73] hover:text-[#1D1D1F] p-1 rounded-full hover:bg-[#F5F5F7] transition cursor-pointer"
+                      className="text-[#6B4C35] hover:text-[#3B1A08] p-1 rounded-full hover:bg-[#FDF4E7] transition cursor-pointer"
                     >
                       <RefreshCw className="w-3.5 h-3.5" />
                     </button>
                   </div>
 
                   <div className="space-y-2">
-                    {bookingDetails.orders.map((order: any) => (
-                      <div
-                        key={order.Order_ID}
-                        className="p-3.5 rounded-2xl bg-[#F5F5F7] border border-[#D2D2D7]/60 space-y-2"
-                      >
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="font-mono font-bold text-[#1D1D1F]">
-                            {order.Order_ID}
-                          </span>
-                          <span
-                            className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase ${
-                              order.Order_Status === 'Served'
-                                ? 'bg-[#248A3D]/10 text-[#248A3D]'
-                                : order.Order_Status === 'Ready_For_Serving'
-                                ? 'bg-[#0071E3]/10 text-[#0071E3]'
-                                : order.Order_Status === 'In_Preparation'
-                                ? 'bg-[#B76E00]/10 text-[#B76E00]'
-                                : order.Order_Status === 'Authorized'
-                                ? 'bg-[#0A84FF]/10 text-[#0A84FF]'
-                                : 'bg-[#E5E5EA] text-[#6E6E73]'
-                            }`}
-                          >
-                            {order.Order_Status.replace(/_/g, ' ')}
-                          </span>
-                        </div>
+                    {bookingDetails.orders.map((order: any) => {
+                      const s = order.Order_Status || 'New_Order';
+                      const stageIdx =
+                        s === 'Served'
+                          ? 5
+                          : s === 'Ready' || s === 'Ready_For_Serving'
+                          ? 4
+                          : s === 'Preparing' || s === 'In_Preparation'
+                          ? 3
+                          : s === 'Accepted' || s === 'Authorized'
+                          ? 2
+                          : 1;
+                      return (
+                        <div
+                          key={order.Order_ID}
+                          className="p-3.5 rounded-2xl bg-[#FFF9F0] border border-[#E6D5C3] space-y-2"
+                        >
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="font-mono font-bold text-[#3B1A08]">
+                              {order.Order_ID}
+                            </span>
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                s === 'Served'
+                                  ? 'bg-[#248A3D]/15 text-[#248A3D]'
+                                  : s === 'Ready' || s === 'Ready_For_Serving'
+                                  ? 'bg-[#248A3D]/10 text-[#248A3D]'
+                                  : s === 'Preparing' || s === 'In_Preparation'
+                                  ? 'bg-[#F56A00]/15 text-[#C2410C]'
+                                  : s === 'Accepted' || s === 'Authorized'
+                                  ? 'bg-[#3B1A08]/10 text-[#3B1A08]'
+                                  : 'bg-[#F4B41A]/30 text-[#78350F]'
+                              }`}
+                            >
+                              {s.replace(/_/g, ' ')}
+                            </span>
+                          </div>
 
-                        {/* Progress Stepper */}
-                        <div className="flex items-center justify-between text-[10px] text-[#6E6E73] pt-1">
-                          <span
-                            className={
-                              order.Order_Status !== 'Cancelled' ? 'font-semibold text-[#0071E3]' : ''
-                            }
-                          >
-                            1. Submitted
-                          </span>
-                          <span>→</span>
-                          <span
-                            className={
-                              ['Authorized', 'In_Preparation', 'Ready_For_Serving', 'Served'].includes(
-                                order.Order_Status
-                              )
-                                ? 'font-semibold text-[#0071E3]'
-                                : ''
-                            }
-                          >
-                            2. Authorized
-                          </span>
-                          <span>→</span>
-                          <span
-                            className={
-                              ['In_Preparation', 'Ready_For_Serving', 'Served'].includes(
-                                order.Order_Status
-                              )
-                                ? 'font-semibold text-[#0071E3]'
-                                : ''
-                            }
-                          >
-                            3. Cooking
-                          </span>
-                          <span>→</span>
-                          <span
-                            className={
-                              order.Order_Status === 'Served' ? 'font-semibold text-[#248A3D]' : ''
-                            }
-                          >
-                            4. Served
-                          </span>
+                          {/* 5-Stage Kitchen Sync Stepper */}
+                          <div className="flex items-center justify-between text-[10px] text-[#6B4C35] pt-1 gap-0.5">
+                            <span className={stageIdx >= 1 ? 'font-bold text-[#F56A00]' : ''}>
+                              1. New
+                            </span>
+                            <span>→</span>
+                            <span className={stageIdx >= 2 ? 'font-bold text-[#F56A00]' : ''}>
+                              2. Accepted
+                            </span>
+                            <span>→</span>
+                            <span className={stageIdx >= 3 ? 'font-bold text-[#F56A00]' : ''}>
+                              3. Preparing
+                            </span>
+                            <span>→</span>
+                            <span className={stageIdx >= 4 ? 'font-bold text-[#248A3D]' : ''}>
+                              4. Ready
+                            </span>
+                            <span>→</span>
+                            <span className={stageIdx >= 5 ? 'font-bold text-[#248A3D]' : ''}>
+                              5. Served
+                            </span>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -1194,13 +1305,13 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
             {/* Right: Interactive Menu & Cart Section */}
             <div className="lg:col-span-7 space-y-5">
               {/* Menu Controls: Search & Category Filter */}
-              <div className="bg-white rounded-3xl p-5 shadow-xs border border-[#D2D2D7] space-y-3">
+              <div className="bg-white rounded-3xl p-5 shadow-xs border border-[#E6D5C3] space-y-3">
                 <div className="flex items-center justify-between">
-                  <h3 className="font-bold text-base text-[#1D1D1F]">Dine-In Menu</h3>
+                  <h3 className="font-bold text-base text-[#3B1A08]">Dine-In Menu</h3>
                   {cart.length > 0 && (
                     <button
                       onClick={() => setIsCartOpen(true)}
-                      className="flex items-center space-x-1.5 px-3.5 py-1.5 rounded-full bg-[#0071E3] hover:bg-[#0077ED] text-white text-xs font-semibold shadow-xs transition cursor-pointer"
+                      className="flex items-center space-x-1.5 px-3.5 py-1.5 rounded-full bg-[#F56A00] hover:bg-[#D95800] text-white text-xs font-semibold shadow-xs transition cursor-pointer"
                     >
                       <ShoppingBag className="w-3.5 h-3.5" />
                       <span>
@@ -1212,25 +1323,25 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
 
                 <div className="flex flex-col sm:flex-row gap-2.5">
                   <div className="relative flex-1">
-                    <Search className="w-4 h-4 absolute left-3.5 top-3 text-[#6E6E73]" />
+                    <Search className="w-4 h-4 absolute left-3.5 top-3 text-[#6B4C35]" />
                     <input
                       type="text"
                       placeholder="Search dishes, ingredients..."
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      className="w-full pl-9 pr-3 py-2 rounded-full border border-[#D2D2D7] bg-[#F5F5F7] focus:bg-white text-xs text-[#1D1D1F] focus:outline-none focus:border-[#0071E3]"
+                      className="w-full pl-9 pr-3 py-2 rounded-full border border-[#E6D5C3] bg-[#FFF9F0] focus:bg-white text-xs text-[#3B1A08] focus:outline-none focus:border-[#F56A00]"
                     />
                   </div>
 
-                  <div className="flex flex-wrap items-center bg-[#E5E5EA]/70 p-1 rounded-full border border-[#D2D2D7]/60">
+                  <div className="flex flex-wrap items-center bg-[#FDF4E7] p-1 rounded-full border border-[#E6D5C3]">
                     {['All', 'Starters', 'Mains', 'Desserts', 'Beverages'].map((cat) => (
                       <button
                         key={cat}
                         onClick={() => setSelectedCategory(cat)}
                         className={`px-3 py-1 rounded-full text-xs transition cursor-pointer ${
                           selectedCategory === cat
-                            ? 'bg-white text-[#1D1D1F] font-semibold shadow-xs'
-                            : 'text-[#6E6E73] hover:text-[#1D1D1F] font-medium'
+                            ? 'bg-[#3B1A08] text-white font-semibold shadow-xs'
+                            : 'text-[#6B4C35] hover:text-[#3B1A08] font-medium'
                         }`}
                       >
                         {cat}
@@ -1246,10 +1357,10 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
                   <motion.div
                     key={item.Food_ID}
                     whileHover={{ y: -3, transition: { duration: 0.2 } }}
-                    className="bg-white rounded-3xl p-4 shadow-xs border border-[#D2D2D7] flex flex-col justify-between hover:border-[#0071E3]/50 hover:shadow-md transition-all duration-200 group"
+                    className="bg-white rounded-3xl p-4 shadow-xs border border-[#E6D5C3] flex flex-col justify-between hover:border-[#F56A00]/60 hover:shadow-md transition-all duration-200 group"
                   >
                     <div className="flex space-x-3.5">
-                      <div className="w-20 h-20 rounded-2xl overflow-hidden flex-shrink-0 bg-[#F5F5F7] border border-[#D2D2D7]/60">
+                      <div className="w-20 h-20 rounded-2xl overflow-hidden flex-shrink-0 bg-[#FFF9F0] border border-[#E6D5C3]">
                         <DishImage
                           src={item.Image_URL}
                           alt={item.Food_Name}
@@ -1258,23 +1369,23 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
                         />
                       </div>
                       <div className="flex-1 min-w-0">
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-[#0071E3]">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-[#F56A00]">
                           {item.Category}
                         </span>
-                        <h4 className="text-sm font-bold text-[#1D1D1F] truncate group-hover:text-[#0071E3] transition-colors">
+                        <h4 className="text-sm font-bold text-[#3B1A08] truncate group-hover:text-[#F56A00] transition-colors">
                           {item.Food_Name}
                         </h4>
-                        <p className="text-[11px] text-[#6E6E73] line-clamp-2 mt-0.5">
+                        <p className="text-[11px] text-[#6B4C35] line-clamp-2 mt-0.5">
                           {item.Description}
                         </p>
                       </div>
                     </div>
 
-                    <div className="flex items-center justify-between pt-3 mt-2 border-t border-[#D2D2D7]/60">
-                      <span className="text-sm font-bold text-[#1D1D1F]">₹{item.Price}</span>
+                    <div className="flex items-center justify-between pt-3 mt-2 border-t border-[#E6D5C3]/60">
+                      <span className="text-sm font-bold text-[#3B1A08]">₹{item.Price}</span>
                       <button
                         onClick={() => addToCart(item)}
-                        className="flex items-center space-x-1 px-3.5 py-1.5 rounded-full bg-[#0071E3] hover:bg-[#0077ED] text-white text-xs font-semibold transition shadow-xs cursor-pointer active:scale-95"
+                        className="flex items-center space-x-1 px-3.5 py-1.5 rounded-full bg-[#F56A00] hover:bg-[#D95800] text-white text-xs font-semibold transition shadow-xs cursor-pointer active:scale-95"
                       >
                         <Plus className="w-3.5 h-3.5" />
                         <span>Add</span>
@@ -1288,7 +1399,7 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
         )}
       </div>
 
-      {/* Cart Drawer with Apple Sheet Animation */}
+      {/* Cart Drawer */}
       <AnimatePresence>
         {isCartOpen && (
           <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex justify-end">
@@ -1299,69 +1410,87 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
               transition={{ type: 'spring', damping: 25, stiffness: 220 }}
               className="bg-white w-full max-w-md h-full flex flex-col shadow-2xl"
             >
-              <div className="p-4 bg-white text-[#1D1D1F] border-b border-[#D2D2D7]/80 flex items-center justify-between">
-                <div className="flex items-center space-x-2">
-                  <div className="w-8 h-8 rounded-full bg-[#0071E3]/10 flex items-center justify-center text-[#0071E3]">
+              <div className="p-4 bg-[#3B1A08] text-white flex items-center justify-between">
+                <div className="flex items-center space-x-2.5">
+                  <div className="w-8 h-8 rounded-full bg-[#F56A00] flex items-center justify-center text-white">
                     <ShoppingBag className="w-4 h-4" />
                   </div>
-                  <h3 className="font-bold text-base text-[#1D1D1F]">Your Order Cart</h3>
+                  <h3 className="font-bold text-base">Your Order Cart</h3>
                 </div>
                 <button
                   onClick={() => setIsCartOpen(false)}
-                  className="p-1 rounded-full text-[#6E6E73] hover:text-[#1D1D1F] hover:bg-[#F5F5F7] transition cursor-pointer"
+                  className="p-1 rounded-full text-[#FDF4E7] hover:text-white hover:bg-white/10 transition cursor-pointer"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
 
-              <div className="p-4 flex-1 overflow-y-auto space-y-3">
+              <div className="p-4 flex-1 overflow-y-auto space-y-3 bg-[#FFF9F0]">
                 {cart.length === 0 ? (
-                  <div className="text-center py-16 text-[#6E6E73] text-sm">
+                  <div className="text-center py-16 text-[#6B4C35] text-sm">
                     Your cart is empty. Add items from the menu.
                   </div>
                 ) : (
-                  cart.map((item) => (
-                    <div
-                      key={item.food.Food_ID}
-                      className="flex items-center justify-between p-3.5 rounded-2xl bg-[#F5F5F7] border border-[#D2D2D7]/60"
-                    >
-                      <div>
-                        <h4 className="text-xs font-bold text-[#1D1D1F]">{item.food.Food_Name}</h4>
-                        <span className="text-[11px] text-[#6E6E73]">
-                          ₹{item.food.Price} × {item.quantity} = ₹{item.food.Price * item.quantity}
-                        </span>
+                  <>
+                    {cart.map((item) => (
+                      <div
+                        key={item.food.Food_ID}
+                        className="flex items-center justify-between p-3.5 rounded-2xl bg-white border border-[#E6D5C3]"
+                      >
+                        <div>
+                          <h4 className="text-xs font-bold text-[#3B1A08]">{item.food.Food_Name}</h4>
+                          <span className="text-[11px] text-[#6B4C35]">
+                            ₹{item.food.Price} × {item.quantity} = ₹{item.food.Price * item.quantity}
+                          </span>
+                        </div>
+                        <div className="flex items-center space-x-2">
+                          <button
+                            onClick={() => updateQuantity(item.food.Food_ID, -1)}
+                            className="w-7 h-7 rounded-full bg-[#FDF4E7] border border-[#E6D5C3] flex items-center justify-center text-[#3B1A08] hover:bg-[#F5E6D3] transition cursor-pointer"
+                          >
+                            <Minus className="w-3 h-3" />
+                          </button>
+                          <span className="text-xs font-bold font-mono text-[#3B1A08]">{item.quantity}</span>
+                          <button
+                            onClick={() => updateQuantity(item.food.Food_ID, 1)}
+                            className="w-7 h-7 rounded-full bg-[#F56A00] text-white flex items-center justify-center hover:bg-[#D95800] transition cursor-pointer"
+                          >
+                            <Plus className="w-3 h-3" />
+                          </button>
+                        </div>
                       </div>
-                      <div className="flex items-center space-x-2">
-                        <button
-                          onClick={() => updateQuantity(item.food.Food_ID, -1)}
-                          className="w-7 h-7 rounded-full bg-white border border-[#D2D2D7] flex items-center justify-center text-[#1D1D1F] hover:bg-[#E5E5EA] transition cursor-pointer"
-                        >
-                          <Minus className="w-3 h-3" />
-                        </button>
-                        <span className="text-xs font-bold font-mono text-[#1D1D1F]">{item.quantity}</span>
-                        <button
-                          onClick={() => updateQuantity(item.food.Food_ID, 1)}
-                          className="w-7 h-7 rounded-full bg-[#0071E3] text-white flex items-center justify-center hover:bg-[#0077ED] transition cursor-pointer"
-                        >
-                          <Plus className="w-3 h-3" />
-                        </button>
-                      </div>
+                    ))}
+
+                    {/* Special Kitchen Instructions */}
+                    <div className="p-3.5 rounded-2xl bg-white border border-[#E6D5C3] space-y-2 mt-2">
+                      <label className="text-xs font-bold text-[#3B1A08] flex items-center space-x-1.5">
+                        <MessageSquareText className="w-3.5 h-3.5 text-[#F56A00]" />
+                        <span>Special Cooking Instructions (Optional)</span>
+                      </label>
+                      <textarea
+                        rows={2}
+                        placeholder="e.g. Less spicy, no onion/garlic, extra crispy..."
+                        value={specialInstructions}
+                        onChange={(e) => setSpecialInstructions(e.target.value)}
+                        className="w-full p-2.5 rounded-xl border border-[#E6D5C3] bg-[#FFF9F0]/60 text-xs text-[#3B1A08] focus:outline-none focus:border-[#F56A00]"
+                      />
                     </div>
-                  ))
+                  </>
                 )}
               </div>
 
               {cart.length > 0 && (
-                <div className="p-5 bg-white border-t border-[#D2D2D7]/80 space-y-3">
+                <div className="p-5 bg-white border-t border-[#E6D5C3] space-y-3">
                   <div className="flex items-center justify-between text-sm">
-                    <span className="text-[#6E6E73] font-medium">Subtotal:</span>
-                    <span className="font-bold text-lg text-[#1D1D1F]">₹{cartTotal}</span>
+                    <span className="text-[#6B4C35] font-medium">Subtotal:</span>
+                    <span className="font-bold text-lg text-[#3B1A08]">₹{cartTotal}</span>
                   </div>
                   <button
                     onClick={handleSubmitOrder}
-                    className="w-full py-3.5 rounded-full bg-[#0071E3] hover:bg-[#0077ED] text-white font-semibold text-sm shadow-xs transition cursor-pointer active:scale-98"
+                    disabled={placingOrder}
+                    className="w-full py-3.5 rounded-full bg-[#F56A00] hover:bg-[#D95800] text-white font-semibold text-sm shadow-xs transition disabled:opacity-50 cursor-pointer active:scale-98"
                   >
-                    Submit Order for Kitchen Authorization
+                    {placingOrder ? 'Sending Order to Kitchen...' : 'Confirm & Send Order to Kitchen'}
                   </button>
                 </div>
               )}
@@ -1370,7 +1499,7 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
         )}
       </AnimatePresence>
 
-      {/* Final Bill & Manual UPI Payment Drawer with Apple Styling */}
+      {/* Final Bill & Manual UPI Payment Drawer */}
       <AnimatePresence>
         {isPaymentOpen && bookingDetails?.bill && (
           <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex justify-end">
@@ -1381,33 +1510,36 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
               transition={{ type: 'spring', damping: 25, stiffness: 220 }}
               className="bg-white w-full max-w-md h-full flex flex-col shadow-2xl"
             >
-              <div className="p-4 bg-white text-[#1D1D1F] border-b border-[#D2D2D7]/80 flex items-center justify-between">
-                <div className="flex items-center space-x-2">
-                  <div className="w-8 h-8 rounded-full bg-[#0071E3]/10 flex items-center justify-center text-[#0071E3]">
+              <div className="p-4 bg-[#3B1A08] text-white flex items-center justify-between">
+                <div className="flex items-center space-x-2.5">
+                  <div className="w-8 h-8 rounded-full bg-[#F56A00] flex items-center justify-center text-white">
                     <CreditCard className="w-4 h-4" />
                   </div>
-                  <h3 className="font-bold text-base text-[#1D1D1F]">
-                    Final Bill #{bookingDetails.bill.Bill_ID}
-                  </h3>
+                  <div>
+                    <h3 className="font-bold text-sm">
+                      {BRAND_CONFIG.name} Bill #{bookingDetails.bill.Bill_ID}
+                    </h3>
+                    <span className="text-[10px] text-[#FDF4E7]/80">{BRAND_CONFIG.subtitle}</span>
+                  </div>
                 </div>
                 <button
                   onClick={() => setIsPaymentOpen(false)}
-                  className="p-1 rounded-full text-[#6E6E73] hover:text-[#1D1D1F] hover:bg-[#F5F5F7] transition cursor-pointer"
+                  className="p-1 rounded-full text-[#FDF4E7] hover:text-white hover:bg-white/10 transition cursor-pointer"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
 
-              <div className="p-5 flex-1 overflow-y-auto space-y-4">
+              <div className="p-5 flex-1 overflow-y-auto space-y-4 bg-[#FFF9F0]">
                 {/* Bill Breakdown */}
-                <div className="p-4 rounded-2xl bg-[#F5F5F7] border border-[#D2D2D7]/60 space-y-2 text-xs">
+                <div className="p-4 rounded-2xl bg-white border border-[#E6D5C3] space-y-2 text-xs">
                   <div className="flex justify-between">
-                    <span className="text-[#6E6E73]">Food Subtotal:</span>
-                    <span className="font-semibold text-[#1D1D1F]">₹{bookingDetails.bill.Subtotal}</span>
+                    <span className="text-[#6B4C35]">Food Subtotal:</span>
+                    <span className="font-semibold text-[#3B1A08]">₹{bookingDetails.bill.Subtotal}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-[#6E6E73]">GST (5%):</span>
-                    <span className="font-semibold text-[#1D1D1F]">₹{bookingDetails.bill.Tax_Amount}</span>
+                    <span className="text-[#6B4C35]">GST (5%):</span>
+                    <span className="font-semibold text-[#3B1A08]">₹{bookingDetails.bill.Tax_Amount}</span>
                   </div>
                   {Number(bookingDetails.bill.Discount) > 0 && (
                     <div className="flex justify-between text-[#248A3D]">
@@ -1415,17 +1547,17 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
                       <span className="font-semibold">-₹{bookingDetails.bill.Discount}</span>
                     </div>
                   )}
-                  <div className="flex justify-between pt-2.5 border-t border-[#D2D2D7]/60 text-sm font-bold text-[#1D1D1F]">
+                  <div className="flex justify-between pt-2.5 border-t border-[#E6D5C3] text-sm font-bold text-[#3B1A08]">
                     <span>Grand Total:</span>
                     <span>₹{bookingDetails.bill.Grand_Total}</span>
                   </div>
                   <div className="flex justify-between text-[11px] pt-1">
-                    <span className="text-[#6E6E73]">Payment Status:</span>
+                    <span className="text-[#6B4C35]">Payment Status:</span>
                     <strong
                       className={
                         bookingDetails.bill.Payment_Status === 'Paid'
                           ? 'text-[#248A3D]'
-                          : 'text-[#B76E00]'
+                          : 'text-[#B45309]'
                       }
                     >
                       {bookingDetails.bill.Payment_Status.replace(/_/g, ' ')}
@@ -1433,17 +1565,17 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
                   </div>
                 </div>
 
-                {/* UPI QR & Manual Verification Flow (Blueprint Section 13.2) */}
+                {/* UPI QR & Manual Verification Flow */}
                 {bookingDetails.bill.Payment_Status !== 'Paid' && (
                   <div className="space-y-4 pt-2">
-                    <div className="text-center p-5 rounded-2xl bg-[#F5F5F7] border border-[#D2D2D7] space-y-3">
-                      <div className="flex items-center justify-center space-x-1.5 text-xs font-semibold text-[#1D1D1F]">
-                        <QrCode className="w-4 h-4 text-[#0071E3]" />
+                    <div className="text-center p-5 rounded-2xl bg-white border border-[#E6D5C3] space-y-3">
+                      <div className="flex items-center justify-center space-x-1.5 text-xs font-semibold text-[#3B1A08]">
+                        <QrCode className="w-4 h-4 text-[#F56A00]" />
                         <span>Scan & Pay via any UPI App</span>
                       </div>
 
                       {/* Dynamic UPI Payment QR Code */}
-                      <div className="bg-white border border-[#D2D2D7] p-2.5 rounded-2xl mx-auto shadow-xs max-w-[220px]">
+                      <div className="bg-white border border-[#E6D5C3] p-2.5 rounded-2xl mx-auto shadow-xs max-w-[220px]">
                         {dynamicUpiQrUrl ? (
                           <img
                             src={dynamicUpiQrUrl}
@@ -1461,11 +1593,11 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
 
                       {/* Payee Info & Quick Copy */}
                       <div className="space-y-1">
-                        <div className="text-xs font-medium text-[#1D1D1F]">
+                        <div className="text-xs font-medium text-[#3B1A08]">
                           Payee: <span className="font-bold">{restaurantPaymentInfo.upiPayeeName}</span>
                         </div>
-                        <div className="inline-flex items-center space-x-2 bg-white px-3 py-1.5 rounded-full border border-[#D2D2D7] shadow-xs">
-                          <span className="text-xs font-mono font-bold text-[#0071E3]">
+                        <div className="inline-flex items-center space-x-2 bg-[#FFF9F0] px-3 py-1.5 rounded-full border border-[#E6D5C3] shadow-xs">
+                          <span className="text-xs font-mono font-bold text-[#F56A00]">
                             {restaurantPaymentInfo.upiId}
                           </span>
                           <button
@@ -1476,15 +1608,15 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
                               setTimeout(() => setCopiedUpi(false), 2000);
                               showToast('success', 'UPI ID copied to clipboard!');
                             }}
-                            className="text-[10px] text-[#0071E3] hover:text-[#0077ED] font-semibold underline cursor-pointer"
+                            className="text-[10px] text-[#F56A00] hover:text-[#D95800] font-semibold underline cursor-pointer"
                           >
                             {copiedUpi ? 'Copied!' : 'Copy'}
                           </button>
                         </div>
                       </div>
 
-                      <div className="text-sm text-[#1D1D1F]">
-                        Amount to Pay: <strong className="text-base text-[#0071E3]">₹{bookingDetails.bill.Grand_Total}</strong>
+                      <div className="text-sm text-[#3B1A08]">
+                        Amount to Pay: <strong className="text-base text-[#F56A00]">₹{bookingDetails.bill.Grand_Total}</strong>
                       </div>
 
                       {/* Direct UPI Intent Link for Mobile Devices */}
@@ -1493,8 +1625,8 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
                           restaurantPaymentInfo.upiPayeeName
                         )}&am=${encodeURIComponent(bookingDetails.bill.Grand_Total)}&tr=${encodeURIComponent(
                           bookingDetails.bill.Bill_ID
-                        )}&cu=INR&tn=${encodeURIComponent(`SAVOR Bill ${bookingDetails.bill.Bill_ID}`)}`}
-                        className="inline-flex items-center justify-center space-x-1.5 w-full py-2.5 rounded-xl bg-white border border-[#0071E3] text-[#0071E3] font-semibold text-xs hover:bg-[#0071E3]/5 transition shadow-xs"
+                        )}&cu=INR&tn=${encodeURIComponent(`${BRAND_CONFIG.name} Bill ${bookingDetails.bill.Bill_ID}`)}`}
+                        className="inline-flex items-center justify-center space-x-1.5 w-full py-2.5 rounded-xl bg-[#FDF4E7] border border-[#F56A00] text-[#F56A00] font-semibold text-xs hover:bg-[#F56A00]/10 transition shadow-xs"
                       >
                         <Zap className="w-3.5 h-3.5" />
                         <span>Pay via Installed UPI App (GPay/PhonePe)</span>
@@ -1504,7 +1636,7 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
                     {/* UTR Submission Form */}
                     <form onSubmit={handleSubmitUPIPayment} className="space-y-3">
                       <div>
-                        <label className="block text-xs font-semibold text-[#1D1D1F] mb-1">
+                        <label className="block text-xs font-semibold text-[#3B1A08] mb-1">
                           Enter UPI Transaction Reference (UTR)
                         </label>
                         <input
@@ -1513,9 +1645,9 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
                           placeholder="e.g. 421987654321"
                           value={utrInput}
                           onChange={(e) => setUtrInput(e.target.value)}
-                          className="w-full px-3.5 py-2.5 rounded-xl border border-[#D2D2D7] text-xs font-mono uppercase bg-[#F5F5F7]/50 focus:bg-white focus:border-[#0071E3] focus:ring-2 focus:ring-[#0071E3]/20 focus:outline-none"
+                          className="w-full px-3.5 py-2.5 rounded-xl border border-[#E6D5C3] text-xs font-mono uppercase bg-white focus:border-[#F56A00] focus:ring-2 focus:ring-[#F56A00]/20 focus:outline-none"
                         />
-                        <span className="block text-[10px] text-[#6E6E73] mt-1">
+                        <span className="block text-[10px] text-[#6B4C35] mt-1">
                           *UTR records payment as pending verification. Staff verifies
                           actual bank receipt before marking Paid.
                         </span>
@@ -1523,7 +1655,7 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
 
                       <button
                         type="submit"
-                        className="w-full py-3 rounded-full bg-[#0071E3] hover:bg-[#0077ED] text-white font-semibold text-xs shadow-xs transition cursor-pointer active:scale-98"
+                        className="w-full py-3 rounded-full bg-[#F56A00] hover:bg-[#D95800] text-white font-semibold text-xs shadow-xs transition cursor-pointer active:scale-98"
                       >
                         Submit UTR for Staff Verification
                       </button>
@@ -1535,8 +1667,8 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
                   <div className="p-5 bg-[#248A3D]/10 border border-[#248A3D]/20 rounded-2xl text-center space-y-2">
                     <CheckCircle2 className="w-8 h-8 text-[#248A3D] mx-auto" />
                     <h4 className="text-sm font-bold text-[#248A3D]">Payment Verified & Settled</h4>
-                    <p className="text-xs text-[#1D1D1F]/80">
-                      Staff has verified the bank receipt. Thank you for dining with Savor!
+                    <p className="text-xs text-[#3B1A08]/80">
+                      Staff has verified the bank receipt. Thank you for dining with {BRAND_CONFIG.name}!
                     </p>
                   </div>
                 )}

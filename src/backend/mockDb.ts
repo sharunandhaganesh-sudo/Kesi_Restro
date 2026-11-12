@@ -6,7 +6,7 @@
  * Implements strict schema validation, column-index mapping, and lock simulation.
  */
 
-import { DATABASE_SCHEMA } from './schema';
+import { DATABASE_SCHEMA, FEEDBACK_SHEET_DEFINITION } from './schema';
 import { generateSalt, hashPassword } from './crypto';
 
 export type SheetRow = Record<string, any>;
@@ -28,6 +28,9 @@ export class MockDatabase {
       if (!this.sheets.has(sheetName)) {
         this.sheets.set(sheetName, []);
       }
+    }
+    if (!this.sheets.has('Feedback')) {
+      this.sheets.set('Feedback', []);
     }
   }
 
@@ -91,7 +94,9 @@ export class MockDatabase {
    * Appends a new row to the sheet, verifying exact column keys
    */
   public insertRow(sheetName: string, rowData: SheetRow): SheetRow {
-    const def = DATABASE_SCHEMA[sheetName];
+    const def =
+      DATABASE_SCHEMA[sheetName] ||
+      (sheetName === 'Feedback' ? FEEDBACK_SHEET_DEFINITION : undefined);
     if (!def) {
       throw new Error(`Sheet '${sheetName}' is not defined in schema.`);
     }
@@ -170,7 +175,7 @@ export class MockDatabase {
   private seedBaselineData(): void {
     // 1. Restaurant Settings
     const settings: Record<string, string> = {
-      RESTAURANT_NAME: 'Savor Dine-In Restaurant',
+      RESTAURANT_NAME: 'Treat & Taste',
       UPI_ID: 'kesikam2006@oksbi',
       UPI_PAYEE_NAME: 'Kesika M',
       TAX_RATE_PERCENT: '5',

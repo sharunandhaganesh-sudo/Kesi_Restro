@@ -13,7 +13,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import QRCode from 'qrcode';
 import { RequestDispatcher } from '../../backend/dispatcher';
 import { UserSessionState } from '../types';
-import { SavorLogo } from '../components/SavorLogo';
+import { BrandLogo } from '../components/BrandLogo';
+import { BRAND_CONFIG } from '../../config/branding';
 import {
   ShieldCheck,
   TrendingUp,
@@ -40,6 +41,8 @@ import {
   Save,
   ExternalLink,
   Copy,
+  MessageSquare,
+  Filter,
 } from 'lucide-react';
 
 interface AdminWebsiteProps {
@@ -62,8 +65,12 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
   // Admin Data
   const [adminData, setAdminData] = useState<any>(null);
   const [activeTab, setActiveTab] = useState<
-    'analytics' | 'users' | 'menu' | 'tables' | 'refunds' | 'settings'
+    'analytics' | 'users' | 'menu' | 'tables' | 'refunds' | 'feedback' | 'settings'
   >('analytics');
+  const [feedbackAnalytics, setFeedbackAnalytics] = useState<any>(null);
+  const [feedbackDateFilter, setFeedbackDateFilter] = useState<string>('');
+  const [feedbackRatingFilter, setFeedbackRatingFilter] = useState<number>(0);
+  const [feedbackLoading, setFeedbackLoading] = useState<boolean>(false);
   const [notice, setNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   // New User Account Modal
@@ -116,10 +123,30 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
     });
     if (res.success && res.data) {
       setAdminData(res.data);
+      if (res.data.feedbackAnalytics) {
+        setFeedbackAnalytics(res.data.feedbackAnalytics);
+      }
       if (res.data.settings) {
         setSettingsForm(res.data.settings);
       }
       loadTableQRs(session.sessionId);
+    }
+  }
+
+  async function loadFilteredFeedback(dateVal = feedbackDateFilter, ratingVal = feedbackRatingFilter) {
+    if (!session?.sessionId) return;
+    setFeedbackLoading(true);
+    const res = await RequestDispatcher.dispatch({
+      action: 'getAdminFeedbackAnalytics',
+      sessionId: session.sessionId,
+      payload: {
+        date: dateVal || undefined,
+        rating: ratingVal > 0 ? ratingVal : undefined,
+      },
+    });
+    setFeedbackLoading(false);
+    if (res.success && res.data) {
+      setFeedbackAnalytics(res.data);
     }
   }
 
@@ -229,78 +256,90 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
     if (!ctx) return;
 
     // Background
-    ctx.fillStyle = '#FFFFFF';
+    ctx.fillStyle = '#FFF9F0';
     ctx.fillRect(0, 0, 1200, 1800);
 
-    // Outer subtle border
-    ctx.lineWidth = 8;
-    ctx.strokeStyle = '#E8D8C8';
+    // Outer border
+    ctx.lineWidth = 10;
+    ctx.strokeStyle = '#3B1A08';
     ctx.strokeRect(30, 30, 1140, 1740);
 
     // Inner gold accent border
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = '#D9AA49';
-    ctx.strokeRect(50, 50, 1100, 1700);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#F4B41A';
+    ctx.strokeRect(52, 52, 1096, 1696);
 
-    // Restaurant Brand
-    ctx.fillStyle = '#650B20';
-    ctx.textAlign = 'center';
-    ctx.font = 'bold 54px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-    ctx.fillText('SAVOR', 600, 220);
+    // Optional uploaded Brand Logo at top
+    const logoImg = new Image();
+    logoImg.crossOrigin = 'anonymous';
+    logoImg.src = BRAND_CONFIG.logoUrl;
+    await new Promise((resolve) => {
+      logoImg.onload = resolve;
+      logoImg.onerror = resolve;
+    });
+    if (logoImg.naturalWidth > 0) {
+      ctx.drawImage(logoImg, 470, 75, 260, 200);
+    } else {
+      ctx.fillStyle = '#3B1A08';
+      ctx.textAlign = 'center';
+      ctx.font = 'bold 54px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+      ctx.fillText(BRAND_CONFIG.name.toUpperCase(), 600, 190);
 
-    ctx.fillStyle = '#6E6E73';
-    ctx.font = '600 20px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-    ctx.fillText('SMART RESTAURANT & DINING SYSTEM', 600, 270);
+      ctx.fillStyle = '#F56A00';
+      ctx.font = '600 24px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+      ctx.fillText(BRAND_CONFIG.subtitle.toUpperCase(), 600, 240);
+    }
 
     // Table Badge
-    ctx.fillStyle = '#FFF8F3';
+    ctx.fillStyle = '#FDF4E7';
     ctx.beginPath();
-    ctx.roundRect(350, 340, 500, 160, 30);
+    ctx.roundRect(350, 320, 500, 165, 30);
     ctx.fill();
-    ctx.strokeStyle = '#650B20';
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#F56A00';
+    ctx.lineWidth = 3;
     ctx.stroke();
 
-    ctx.fillStyle = '#292323';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#3B1A08';
     ctx.font = 'bold 64px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-    ctx.fillText(`TABLE ${tbl.Table_Number}`, 600, 425);
+    ctx.fillText(`TABLE ${tbl.Table_Number}`, 600, 405);
 
-    ctx.fillStyle = '#650B20';
+    ctx.fillStyle = '#F56A00';
     ctx.font = '600 24px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-    ctx.fillText(`Seating Capacity: ${tbl.Seating_Capacity} Guests`, 600, 470);
+    ctx.fillText(`Seating Capacity: ${tbl.Seating_Capacity} Guests`, 600, 452);
 
     // High resolution real scannable QR code box
     const qrSize = 560;
     const qrX = 320;
-    const qrY = 560;
+    const qrY = 550;
 
     ctx.fillStyle = '#FFFFFF';
     ctx.fillRect(qrX - 20, qrY - 20, qrSize + 40, qrSize + 40);
-    ctx.strokeStyle = '#650B20';
+    ctx.strokeStyle = '#3B1A08';
     ctx.lineWidth = 4;
     ctx.strokeRect(qrX - 20, qrY - 20, qrSize + 40, qrSize + 40);
 
     ctx.drawImage(qrImg, qrX, qrY, qrSize, qrSize);
 
     // Call to action text
-    ctx.fillStyle = '#292323';
+    ctx.fillStyle = '#3B1A08';
     ctx.font = 'bold 36px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-    ctx.fillText('Scan to View Menu & Order', 600, 1220);
+    ctx.fillText('Scan to View Menu & Order', 600, 1215);
 
-    ctx.fillStyle = '#6E6E73';
+    ctx.fillStyle = '#6B4C35';
     ctx.font = '500 24px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-    ctx.fillText('1. Point smartphone camera at QR code', 600, 1280);
-    ctx.fillText(`2. Automatically opens Table ${tbl.Table_Number} menu`, 600, 1325);
-    ctx.fillText('3. Place orders with instant kitchen dispatch', 600, 1370);
+    ctx.fillText('1. Point smartphone camera at QR code', 600, 1275);
+    ctx.fillText(`2. Automatically opens Table ${tbl.Table_Number} menu`, 600, 1320);
+    ctx.fillText('3. Place orders with instant kitchen dispatch', 600, 1365);
 
     // Footer note
-    ctx.fillStyle = '#86868B';
+    ctx.fillStyle = '#6B4C35';
     ctx.font = '18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-    ctx.fillText(`Token: ${qrInfo?.token || tbl.Table_ID} • Savor Dine-In Restaurant`, 600, 1680);
+    ctx.fillText(`Token: ${qrInfo?.token || tbl.Table_ID} • ${BRAND_CONFIG.fullName}`, 600, 1680);
 
     // Trigger download
     const link = document.createElement('a');
-    link.download = `SAVOR_Table_${tbl.Table_Number}_QR.png`;
+    link.download = `TreatAndTaste_Table_${tbl.Table_Number}_QR.png`;
     link.href = canvas.toDataURL('image/png');
     link.click();
     showToast('success', `Scannable QR standee downloaded for Table ${tbl.Table_Number}!`);
@@ -503,7 +542,7 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
   const m = adminData?.metrics;
 
   return (
-    <div className="min-h-screen bg-[#F5F5F7] text-[#1D1D1F] pb-24">
+    <div className="min-h-screen bg-[#FFF9F0] text-[#3B1A08] pb-24">
       {/* Toast Notification */}
       {notice && (
         <div
@@ -524,23 +563,23 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
 
       {!isAdminAuthenticated ? (
         /* Login Card */
-        <div className="max-w-md mx-auto pt-16 px-4">
-          <div className="bg-white rounded-3xl p-8 shadow-xs border border-[#D2D2D7]/70 space-y-6">
-            <div className="text-center space-y-2">
-              <div className="w-14 h-14 rounded-2xl bg-[#0071E3]/10 text-[#0071E3] flex items-center justify-center mx-auto">
-                <ShieldCheck className="w-7 h-7" />
+        <div className="max-w-md mx-auto pt-14 px-4">
+          <div className="bg-white rounded-3xl p-8 shadow-sm border border-[#E6D5C3] space-y-6">
+            <div className="text-center space-y-2.5">
+              <div className="flex justify-center">
+                <BrandLogo size="md" />
               </div>
-              <h2 className="text-2xl font-semibold tracking-tight text-[#1D1D1F]">
+              <h2 className="text-2xl font-bold tracking-tight text-[#3B1A08] pt-1">
                 Administrator Console
               </h2>
-              <p className="text-xs text-[#6E6E73] max-w-xs mx-auto">
-                Executive financial analytics, employee provisioning, catalog control, and refund audits.
+              <p className="text-xs text-[#6B4C35] max-w-xs mx-auto">
+                Executive financial analytics, employee provisioning, feedback management, catalog control, and refund audits.
               </p>
             </div>
 
             <form onSubmit={handleLogin} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-[#1D1D1F] mb-1.5">
+                <label className="block text-xs font-semibold text-[#3B1A08] mb-1.5">
                   Admin Username or Email
                 </label>
                 <input
@@ -549,21 +588,21 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
                   value={identifier}
                   onChange={(e) => setIdentifier(e.target.value)}
                   placeholder="e.g. admin"
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-[#D2D2D7] text-sm text-[#1D1D1F] placeholder-[#6E6E73]/50 focus:outline-none focus:border-[#0071E3] focus:ring-2 focus:ring-[#0071E3]/20 transition"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-[#E6D5C3] text-sm text-[#3B1A08] placeholder-[#6B4C35]/50 focus:outline-none focus:border-[#F56A00] focus:ring-2 focus:ring-[#F56A00]/20 transition"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-[#1D1D1F] mb-1.5">Password</label>
+                <label className="block text-xs font-semibold text-[#3B1A08] mb-1.5">Password</label>
                 <input
                   type="password"
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-[#D2D2D7] text-sm text-[#1D1D1F] placeholder-[#6E6E73]/50 focus:outline-none focus:border-[#0071E3] focus:ring-2 focus:ring-[#0071E3]/20 transition"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-[#E6D5C3] text-sm text-[#3B1A08] placeholder-[#6B4C35]/50 focus:outline-none focus:border-[#F56A00] focus:ring-2 focus:ring-[#F56A00]/20 transition"
                 />
-                <span className="block text-[11px] text-[#6E6E73] mt-1.5">
-                  Default demo admin password: <code className="bg-[#F5F5F7] px-1.5 py-0.5 rounded text-[#1D1D1F] font-mono">DemoPass@2026</code>
+                <span className="block text-[11px] text-[#6B4C35] mt-1.5">
+                  Default demo admin password: <code className="bg-[#FDF4E7] px-1.5 py-0.5 rounded text-[#3B1A08] font-mono">DemoPass@2026</code>
                 </span>
               </div>
 
@@ -577,7 +616,7 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
               <button
                 type="submit"
                 disabled={authLoading}
-                className="w-full py-3 rounded-xl bg-[#0071E3] hover:bg-[#0077ED] text-white font-medium text-sm shadow-xs transition disabled:opacity-50"
+                className="w-full py-3 rounded-xl bg-[#F56A00] hover:bg-[#D95800] text-white font-semibold text-sm shadow-xs transition disabled:opacity-50 cursor-pointer"
               >
                 {authLoading ? 'Verifying...' : 'Sign In as Administrator'}
               </button>
@@ -588,17 +627,15 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
         /* Executive Management Dashboard */
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-6">
           {/* Header Action Bar */}
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-white p-6 rounded-3xl shadow-xs border border-[#D2D2D7]/70">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-white p-6 rounded-3xl shadow-xs border border-[#E6D5C3]">
             <div className="flex items-center space-x-3.5">
-              <div className="p-3 rounded-2xl bg-[#0071E3]/10 text-[#0071E3]">
-                <ShieldCheck className="w-6 h-6" />
-              </div>
+              <BrandLogo size="sm" variant="icon" />
               <div>
-                <h1 className="text-xl font-semibold tracking-tight text-[#1D1D1F]">
-                  Executive Administration
+                <h1 className="text-xl font-bold tracking-tight text-[#3B1A08]">
+                  {BRAND_CONFIG.name} — Executive Administration
                 </h1>
-                <p className="text-xs text-[#6E6E73]">
-                  Logged in as Administrator <strong className="text-[#1D1D1F]">{session.name}</strong>
+                <p className="text-xs text-[#6B4C35]">
+                  Logged in as Administrator <strong className="text-[#3B1A08]">{session.name}</strong>
                 </p>
               </div>
             </div>
@@ -606,14 +643,14 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
             <div className="flex items-center space-x-2">
               <button
                 onClick={loadAdminData}
-                className="flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-[#F5F5F7] border border-[#D2D2D7]/80 hover:bg-[#E5E5EA] text-[#1D1D1F] text-xs font-medium transition"
+                className="flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-[#FDF4E7] border border-[#E6D5C3] hover:bg-[#F5E6D3] text-[#3B1A08] text-xs font-semibold transition cursor-pointer"
               >
-                <RefreshCw className="w-3.5 h-3.5 text-[#6E6E73]" />
+                <RefreshCw className="w-3.5 h-3.5 text-[#F56A00]" />
                 <span>Refresh Data</span>
               </button>
               <button
                 onClick={onLogout}
-                className="flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-[#D70015]/10 text-[#D70015] hover:bg-[#D70015]/20 text-xs font-medium transition"
+                className="flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-[#D70015]/10 text-[#D70015] hover:bg-[#D70015]/20 text-xs font-semibold transition cursor-pointer"
               >
                 <LogOut className="w-3.5 h-3.5" />
                 <span>Sign Out</span>
@@ -621,31 +658,32 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
             </div>
           </div>
 
-          {/* Apple Segmented Pill Navigation */}
-          <div className="flex overflow-x-auto p-1 bg-[#E5E5EA] rounded-full max-w-full no-scrollbar">
+          {/* Segmented Pill Navigation */}
+          <div className="flex overflow-x-auto p-1.5 bg-[#FDF4E7] border border-[#E6D5C3] rounded-full max-w-full no-scrollbar">
             {[
               { id: 'analytics', label: 'Financial Analytics' },
               { id: 'users', label: 'User Accounts', count: adminData?.users?.length },
               { id: 'menu', label: 'Menu Catalog', count: adminData?.menu?.length },
               { id: 'tables', label: 'Table Setup', count: adminData?.tables?.length },
               { id: 'refunds', label: 'Refund Reviews', count: adminData?.refunds?.filter((r: any) => r.Refund_Status === 'Requested').length },
+              { id: 'feedback', label: 'Feedback Management', count: feedbackAnalytics?.totalFeedbackCount ?? m?.totalFeedbackCount },
               { id: 'settings', label: 'Restaurant Settings' },
             ].map((tab) => (
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id as any)}
-                className={`flex-shrink-0 flex items-center space-x-1.5 px-4 py-2 rounded-full text-xs font-medium transition-all ${
+                className={`flex-shrink-0 flex items-center space-x-1.5 px-4 py-2 rounded-full text-xs font-semibold transition-all cursor-pointer ${
                   activeTab === tab.id
-                    ? 'bg-white text-[#1D1D1F] shadow-xs'
-                    : 'text-[#6E6E73] hover:text-[#1D1D1F]'
+                    ? 'bg-[#3B1A08] text-white shadow-xs'
+                    : 'text-[#6B4C35] hover:text-[#3B1A08]'
                 }`}
               >
                 <span>{tab.label}</span>
                 {tab.count !== undefined && tab.count > 0 && (
-                  <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-semibold ${
+                  <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
                     activeTab === tab.id
-                      ? 'bg-[#0071E3] text-white'
-                      : 'bg-[#D2D2D7] text-[#1D1D1F]'
+                      ? 'bg-[#F56A00] text-white'
+                      : 'bg-[#F4B41A]/30 text-[#3B1A08]'
                   }`}>
                     {tab.count}
                   </span>
@@ -775,7 +813,7 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
                 </div>
                 <button
                   onClick={() => setShowUserModal(true)}
-                  className="flex items-center space-x-1.5 px-4 py-2.5 rounded-xl bg-[#0071E3] text-white text-xs font-medium shadow-xs hover:bg-[#0077ED] transition self-start sm:self-auto"
+                  className="flex items-center space-x-1.5 px-4 py-2.5 rounded-xl bg-[#F56A00] text-white text-xs font-semibold shadow-xs hover:bg-[#D95800] transition self-start sm:self-auto cursor-pointer"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   <span>Provision New User</span>
@@ -856,7 +894,7 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
                     setMenuPrice(300);
                     setShowMenuModal(true);
                   }}
-                  className="flex items-center space-x-1.5 px-4 py-2.5 rounded-xl bg-[#0071E3] text-white text-xs font-medium shadow-xs hover:bg-[#0077ED] transition self-start sm:self-auto"
+                  className="flex items-center space-x-1.5 px-4 py-2.5 rounded-xl bg-[#F56A00] text-white text-xs font-semibold shadow-xs hover:bg-[#D95800] transition self-start sm:self-auto cursor-pointer"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   <span>Add New Dish</span>
@@ -933,7 +971,7 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
                 </div>
                 <button
                   onClick={() => setShowTableModal(true)}
-                  className="flex items-center space-x-1.5 px-4 py-2.5 rounded-xl bg-[#0071E3] text-white text-xs font-medium shadow-xs hover:bg-[#0077ED] transition self-start sm:self-auto"
+                  className="flex items-center space-x-1.5 px-4 py-2.5 rounded-xl bg-[#F56A00] text-white text-xs font-semibold shadow-xs hover:bg-[#D95800] transition self-start sm:self-auto cursor-pointer"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   <span>Add Table</span>
@@ -979,7 +1017,7 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
                     <div className="space-y-1.5 pt-1">
                       <button
                         onClick={() => setSelectedTableForStandee(tbl)}
-                        className="w-full py-1.5 rounded-xl bg-[#0071E3] hover:bg-[#0077ED] text-white text-[11px] font-medium shadow-xs transition flex items-center justify-center space-x-1 cursor-pointer active:scale-98"
+                        className="w-full py-1.5 rounded-xl bg-[#F56A00] hover:bg-[#D95800] text-white text-[11px] font-semibold shadow-xs transition flex items-center justify-center space-x-1 cursor-pointer active:scale-98"
                       >
                         <QrCode className="w-3 h-3" />
                         <span>QR & Standee</span>
@@ -1074,7 +1112,7 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
                               setPayoutAmount(Number(ref.Requested_Amount));
                               setShowPayoutModal(true);
                             }}
-                            className="px-3.5 py-1.5 rounded-xl bg-[#0071E3] hover:bg-[#0077ED] text-white text-xs font-medium shadow-xs transition"
+                            className="px-3.5 py-1.5 rounded-xl bg-[#F56A00] hover:bg-[#D95800] text-white text-xs font-semibold shadow-xs transition cursor-pointer"
                           >
                             Record Payout Reference
                           </button>
@@ -1084,6 +1122,184 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
                   ))}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* TAB 5.5: Feedback Management & Multi-Rating Analytics */}
+          {activeTab === 'feedback' && (
+            <div className="space-y-6">
+              {/* Average Rating Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                {[
+                  {
+                    label: 'Average Overall Rating',
+                    value: feedbackAnalytics?.averageOverallRating ?? m?.averageRating ?? 0,
+                    sub: `${feedbackAnalytics?.totalFeedbackCount ?? 0} matching review(s)`,
+                    accent: 'border-[#F4B41A] bg-[#FFFDF5]',
+                  },
+                  {
+                    label: 'Food Quality Average',
+                    value: feedbackAnalytics?.averageFoodQualityRating ?? 0,
+                    sub: 'Taste, presentation & temperature',
+                    accent: 'border-[#F56A00]/40 bg-white',
+                  },
+                  {
+                    label: 'Service Average',
+                    value: feedbackAnalytics?.averageServiceRating ?? 0,
+                    sub: 'Hospitality & table speed',
+                    accent: 'border-[#E6D5C3] bg-white',
+                  },
+                  {
+                    label: 'Cleanliness Average',
+                    value: feedbackAnalytics?.averageCleanlinessRating ?? 0,
+                    sub: 'Dining area & hygiene standards',
+                    accent: 'border-[#E6D5C3] bg-white',
+                  },
+                ].map((card) => (
+                  <div
+                    key={card.label}
+                    className={`p-5 rounded-3xl border shadow-xs space-y-1.5 ${card.accent}`}
+                  >
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-[#6B4C35]">
+                      {card.label}
+                    </span>
+                    <div className="flex items-center space-x-2">
+                      <span className="text-3xl font-bold text-[#3B1A08]">
+                        {Number(card.value || 0).toFixed(1)}
+                      </span>
+                      <Star className="w-5 h-5 fill-[#F4B41A] text-[#F4B41A]" />
+                      <span className="text-xs text-[#6B4C35]">/ 5.0</span>
+                    </div>
+                    <p className="text-[11px] text-[#6B4C35]">{card.sub}</p>
+                  </div>
+                ))}
+              </div>
+
+              {/* Filter Bar + Feedback Table/List */}
+              <div className="bg-white rounded-3xl p-6 shadow-xs border border-[#E6D5C3] space-y-5">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-[#E6D5C3]">
+                  <div>
+                    <h3 className="font-bold text-base text-[#3B1A08] flex items-center space-x-2">
+                      <MessageSquare className="w-4 h-4 text-[#F56A00]" />
+                      <span>Submitted Customer Feedback ({feedbackAnalytics?.items?.length || 0})</span>
+                    </h3>
+                    <p className="text-xs text-[#6B4C35] mt-0.5">
+                      Verified feedback permanently stored in the Google Sheets <code className="bg-[#FDF4E7] px-1 rounded">Feedback</code> tab, linked to Order ID & Customer ID.
+                    </p>
+                  </div>
+
+                  {/* Date & Rating Filters */}
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <div className="flex items-center space-x-1.5 bg-[#FFF9F0] px-3 py-1.5 rounded-xl border border-[#E6D5C3]">
+                      <Filter className="w-3.5 h-3.5 text-[#F56A00]" />
+                      <input
+                        type="date"
+                        value={feedbackDateFilter}
+                        onChange={(e) => {
+                          const nextDate = e.target.value;
+                          setFeedbackDateFilter(nextDate);
+                          loadFilteredFeedback(nextDate, feedbackRatingFilter);
+                        }}
+                        className="bg-transparent text-xs text-[#3B1A08] focus:outline-none"
+                      />
+                    </div>
+
+                    <select
+                      value={feedbackRatingFilter}
+                      onChange={(e) => {
+                        const nextRating = Number(e.target.value);
+                        setFeedbackRatingFilter(nextRating);
+                        loadFilteredFeedback(feedbackDateFilter, nextRating);
+                      }}
+                      className="px-3 py-2 rounded-xl border border-[#E6D5C3] bg-[#FFF9F0] text-xs font-semibold text-[#3B1A08] focus:outline-none focus:border-[#F56A00]"
+                    >
+                      <option value={0}>All Ratings</option>
+                      {[5, 4, 3, 2, 1].map((r) => (
+                        <option key={r} value={r}>
+                          {r} Star{r > 1 ? 's' : ''} Only
+                        </option>
+                      ))}
+                    </select>
+
+                    {(feedbackDateFilter || feedbackRatingFilter > 0) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFeedbackDateFilter('');
+                          setFeedbackRatingFilter(0);
+                          loadFilteredFeedback('', 0);
+                        }}
+                        className="px-3 py-2 rounded-xl bg-[#FDF4E7] hover:bg-[#F5E6D3] text-[#3B1A08] font-semibold transition cursor-pointer"
+                      >
+                        Reset
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {feedbackLoading ? (
+                  <div className="text-center py-12 text-xs text-[#6B4C35]">
+                    Loading verified customer feedback...
+                  </div>
+                ) : !feedbackAnalytics?.items || feedbackAnalytics.items.length === 0 ? (
+                  <div className="text-center py-12 text-xs text-[#6B4C35]">
+                    No submitted feedback matches the selected filters.
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {feedbackAnalytics.items.map((fb: any) => (
+                      <div
+                        key={fb.Feedback_ID || `${fb.Order_ID}-${fb.Submitted_At}`}
+                        className="p-5 rounded-2xl bg-[#FFF9F0] border border-[#E6D5C3] space-y-3"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <div className="flex items-center space-x-2">
+                              <strong className="text-sm font-bold text-[#3B1A08]">
+                                {fb.Customer_Name || 'Guest'}
+                              </strong>
+                              {fb.Order_ID && (
+                                <span className="px-2 py-0.5 rounded-full bg-white border border-[#E6D5C3] font-mono text-[10px] font-bold text-[#F56A00]">
+                                  {fb.Order_ID}
+                                </span>
+                              )}
+                            </div>
+                            <span className="text-[11px] text-[#6B4C35]">
+                              {fb.Booking_ID} • {fb.Submitted_At ? new Date(fb.Submitted_At).toLocaleString() : ''}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center space-x-1 px-2.5 py-1 rounded-full bg-[#F4B41A]/25 text-[#3B1A08] text-xs font-bold">
+                            <Star className="w-3.5 h-3.5 fill-[#F4B41A] text-[#F4B41A]" />
+                            <span>{fb.Overall_Rating}/5</span>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-2 text-[11px]">
+                          <div className="p-2 rounded-xl bg-white border border-[#E6D5C3] text-center">
+                            <span className="block text-[#6B4C35]">Food Quality</span>
+                            <strong className="text-[#3B1A08]">{fb.Food_Quality_Rating}/5</strong>
+                          </div>
+                          <div className="p-2 rounded-xl bg-white border border-[#E6D5C3] text-center">
+                            <span className="block text-[#6B4C35]">Service</span>
+                            <strong className="text-[#3B1A08]">{fb.Service_Rating}/5</strong>
+                          </div>
+                          <div className="p-2 rounded-xl bg-white border border-[#E6D5C3] text-center">
+                            <span className="block text-[#6B4C35]">Cleanliness</span>
+                            <strong className="text-[#3B1A08]">{fb.Cleanliness_Rating}/5</strong>
+                          </div>
+                        </div>
+
+                        {fb.Comments && (
+                          <p className="text-xs text-[#3B1A08] bg-white p-3 rounded-xl border border-[#E6D5C3] italic">
+                            "{fb.Comments}"
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -1104,7 +1320,7 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
                     <button
                       type="button"
                       onClick={handleSetDefaultUpiPreset}
-                      className="px-3.5 py-2 rounded-xl bg-[#F5F5F7] hover:bg-[#E5E5EA] text-xs font-semibold text-[#0071E3] border border-[#D2D2D7]/70 transition flex items-center space-x-1.5 cursor-pointer"
+                      className="px-3.5 py-2 rounded-xl bg-[#FDF4E7] hover:bg-[#F5E6D3] text-xs font-semibold text-[#F56A00] border border-[#E6D5C3] transition flex items-center space-x-1.5 cursor-pointer"
                     >
                       <span>Apply Kesika M UPI Preset</span>
                     </button>
@@ -1112,7 +1328,7 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
                       type="button"
                       disabled={isSavingSettings}
                       onClick={() => handleSaveAllSettings()}
-                      className="px-5 py-2 rounded-xl bg-[#0071E3] hover:bg-[#0077ED] text-xs font-semibold text-white shadow-xs transition flex items-center space-x-1.5 cursor-pointer disabled:opacity-50"
+                      className="px-5 py-2 rounded-xl bg-[#F56A00] hover:bg-[#D95800] text-xs font-semibold text-white shadow-xs transition flex items-center space-x-1.5 cursor-pointer disabled:opacity-50"
                     >
                       <Save className="w-3.5 h-3.5" />
                       <span>{isSavingSettings ? 'Saving to Database...' : 'Save All Settings'}</span>
@@ -1381,7 +1597,7 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
                     <input
                       type="email"
                       required
-                      placeholder="e.g. waiter1@savor.restaurant"
+                      placeholder="e.g. waiter1@treatandtaste.restaurant"
                       value={newUserEmail}
                       onChange={(e) => setNewUserEmail(e.target.value)}
                       className="w-full px-3.5 py-2 rounded-xl border border-[#D2D2D7] text-xs text-[#1D1D1F] focus:outline-none focus:border-[#0071E3]"
@@ -1657,27 +1873,24 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
                 </div>
 
                 {/* Printable Standee Card Container */}
-                <div id="printable-standee" className="bg-[#FAFAFC] p-6 rounded-2xl border-2 border-[#D2D2D7] shadow-inner text-center space-y-4">
+                <div id="printable-standee" className="bg-[#FFF9F0] p-6 rounded-2xl border-2 border-[#3B1A08] shadow-inner text-center space-y-4">
                   {/* Brand Header */}
                   <div className="flex flex-col items-center justify-center space-y-1">
-                    <SavorLogo size="lg" />
-                    <span className="text-[11px] font-semibold tracking-widest uppercase text-[#6E6E73]">
-                      Smart Restaurant & Dining System
-                    </span>
+                    <BrandLogo size="lg" />
                   </div>
 
                   {/* Table Badge */}
-                  <div className="inline-block px-6 py-2.5 rounded-2xl bg-white border border-[#D2D2D7] shadow-xs">
-                    <span className="text-2xl font-black text-[#1D1D1F] tracking-tight block">
+                  <div className="inline-block px-6 py-2.5 rounded-2xl bg-white border border-[#E6D5C3] shadow-xs">
+                    <span className="text-2xl font-black text-[#3B1A08] tracking-tight block">
                       TABLE {selectedTableForStandee.Table_Number}
                     </span>
-                    <span className="text-xs font-semibold text-[#0071E3]">
+                    <span className="text-xs font-semibold text-[#F56A00]">
                       Seating Capacity: {selectedTableForStandee.Seating_Capacity} Guests
                     </span>
                   </div>
 
                   {/* Real Scannable Table-Specific QR Code */}
-                  <div className="w-56 h-56 bg-white p-3 rounded-2xl border-2 border-[#650B20] mx-auto shadow-md relative flex items-center justify-center">
+                  <div className="w-56 h-56 bg-white p-3 rounded-2xl border-2 border-[#3B1A08] mx-auto shadow-md relative flex items-center justify-center">
                     {tableQRs[selectedTableForStandee.Table_ID]?.dataUrl ? (
                       <img
                         src={tableQRs[selectedTableForStandee.Table_ID].dataUrl}
@@ -1685,16 +1898,16 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
                         className="w-full h-full object-contain rounded-lg"
                       />
                     ) : (
-                      <div className="text-xs text-[#6E6E73]">Generating QR...</div>
+                      <div className="text-xs text-[#6B4C35]">Generating QR...</div>
                     )}
                   </div>
 
                   {/* Token Metadata & Status Controls */}
                   {tableQRs[selectedTableForStandee.Table_ID] && (
-                    <div className="text-[11px] bg-white p-3 rounded-xl border border-[#D2D2D7] text-left space-y-2">
+                    <div className="text-[11px] bg-white p-3 rounded-xl border border-[#E6D5C3] text-left space-y-2">
                       <div className="flex items-center justify-between">
-                        <span className="font-semibold text-[#1D1D1F]">
-                          Token: <code className="text-[#650B20]">{tableQRs[selectedTableForStandee.Table_ID].token}</code>
+                        <span className="font-semibold text-[#3B1A08]">
+                          Token: <code className="text-[#F56A00]">{tableQRs[selectedTableForStandee.Table_ID].token}</code>
                         </span>
                         <span
                           className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
@@ -1710,7 +1923,7 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
                         <button
                           type="button"
                           onClick={() => handleRegenerateQR(selectedTableForStandee.Table_ID)}
-                          className="flex-1 py-1.5 rounded-lg bg-[#FFF8F3] border border-[#D9AA49] text-[#650B20] font-semibold hover:bg-[#E8D8C8] transition cursor-pointer"
+                          className="flex-1 py-1.5 rounded-lg bg-[#FDF4E7] border border-[#F4B41A] text-[#3B1A08] font-semibold hover:bg-[#F5E6D3] transition cursor-pointer"
                         >
                           Regenerate Token
                         </button>
@@ -1722,7 +1935,7 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
                               tableQRs[selectedTableForStandee.Table_ID].isActive
                             )
                           }
-                          className="flex-1 py-1.5 rounded-lg bg-[#F5F5F7] border border-[#D2D2D7] text-[#1D1D1F] font-semibold hover:bg-[#E5E5EA] transition cursor-pointer"
+                          className="flex-1 py-1.5 rounded-lg bg-[#FFF9F0] border border-[#E6D5C3] text-[#3B1A08] font-semibold hover:bg-[#FDF4E7] transition cursor-pointer"
                         >
                           {tableQRs[selectedTableForStandee.Table_ID].isActive ? 'Disable QR' : 'Enable QR'}
                         </button>
@@ -1731,23 +1944,23 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
                   )}
 
                   <div className="space-y-1">
-                    <p className="text-xs font-bold text-[#1D1D1F]">
+                    <p className="text-xs font-bold text-[#3B1A08]">
                       Scan to Reserve, View Menu & Order
                     </p>
-                    <p className="text-[11px] text-[#6E6E73]">
-                      Orders are automatically tagged to Table {selectedTableForStandee.Table_Number} and dispatched to kitchen upon staff authorization.
+                    <p className="text-[11px] text-[#6B4C35]">
+                      Orders are automatically tagged to Table {selectedTableForStandee.Table_Number} and sent straight to the {BRAND_CONFIG.name} Kitchen.
                     </p>
                   </div>
 
                   {/* Dining Wi-Fi */}
-                  <div className="p-3 bg-white rounded-xl border border-[#D2D2D7] text-[11px] text-[#6E6E73] flex items-center justify-around">
+                  <div className="p-3 bg-white rounded-xl border border-[#E6D5C3] text-[11px] text-[#6B4C35] flex items-center justify-around">
                     <div>
-                      <span className="block font-semibold text-[#1D1D1F]">Complimentary Wi-Fi</span>
-                      <span>SSID: <strong>SAVOR-Guest</strong></span>
+                      <span className="block font-semibold text-[#3B1A08]">Complimentary Wi-Fi</span>
+                      <span>SSID: <strong>{BRAND_CONFIG.wifiSsid}</strong></span>
                     </div>
-                    <div className="border-l border-[#D2D2D7] pl-4 text-left">
-                      <span className="block font-semibold text-[#1D1D1F]">Password</span>
-                      <span className="font-mono">Welcome@Savor</span>
+                    <div className="border-l border-[#E6D5C3] pl-4 text-left">
+                      <span className="block font-semibold text-[#3B1A08]">Password</span>
+                      <span className="font-mono">{BRAND_CONFIG.wifiPassword}</span>
                     </div>
                   </div>
                 </div>
@@ -1757,7 +1970,7 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
                   <button
                     type="button"
                     onClick={() => downloadStandeePNG(selectedTableForStandee)}
-                    className="flex-1 py-3 rounded-full bg-[#0071E3] hover:bg-[#0077ED] text-white text-xs font-semibold shadow-xs transition flex items-center justify-center space-x-2 cursor-pointer active:scale-98"
+                    className="flex-1 py-3 rounded-full bg-[#F56A00] hover:bg-[#D95800] text-white text-xs font-semibold shadow-xs transition flex items-center justify-center space-x-2 cursor-pointer active:scale-98"
                   >
                     <Download className="w-4 h-4" />
                     <span>Download Standee (High-Res PNG)</span>
@@ -1765,15 +1978,15 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
                   <button
                     type="button"
                     onClick={() => window.print()}
-                    className="px-5 py-3 rounded-full bg-[#F5F5F7] hover:bg-[#E5E5EA] text-[#1D1D1F] text-xs font-semibold border border-[#D2D2D7] transition flex items-center justify-center space-x-1.5 cursor-pointer"
+                    className="px-5 py-3 rounded-full bg-[#FDF4E7] hover:bg-[#F5E6D3] text-[#3B1A08] text-xs font-semibold border border-[#E6D5C3] transition flex items-center justify-center space-x-1.5 cursor-pointer"
                   >
-                    <Printer className="w-4 h-4 text-[#6E6E73]" />
+                    <Printer className="w-4 h-4 text-[#6B4C35]" />
                     <span>Print</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => setSelectedTableForStandee(null)}
-                    className="px-4 py-3 rounded-full bg-white hover:bg-[#F5F5F7] text-[#6E6E73] text-xs font-semibold border border-[#D2D2D7] transition cursor-pointer"
+                    className="px-4 py-3 rounded-full bg-white hover:bg-[#FFF9F0] text-[#6B4C35] text-xs font-semibold border border-[#E6D5C3] transition cursor-pointer"
                   >
                     Close
                   </button>

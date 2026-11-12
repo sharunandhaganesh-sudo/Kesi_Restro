@@ -9,21 +9,34 @@
 
 import { db, SheetRow } from '../mockDb';
 
+export type KitchenOrderStatus =
+  | 'New_Order'
+  | 'Accepted'
+  | 'Preparing'
+  | 'Ready'
+  | 'Served'
+  | 'Authorized'
+  | 'In_Preparation'
+  | 'Ready_For_Serving';
+
 export interface CartItemInput {
   foodId: string;
   quantity: number;
+  specialInstructions?: string;
 }
 
 export class OrderService {
   /**
    * Creates an order with items, computing all prices exclusively from the Menu tab.
-   * Browser-supplied prices are strictly ignored.
+   * Immediately queues the order as 'New_Order' for Kitchen Display visibility without waiting for billing.
    */
   public static createOrder(params: {
+    orderId?: string;
     bookingId: string;
     items: CartItemInput[];
+    specialInstructions?: string;
     createdByRole: 'Customer' | 'Staff';
-  }): { success: boolean; message: string; orderId?: string; totalAmount?: number } {
+  }): { success: boolean; message: string; orderId?: string; totalAmount?: number; orderStatus?: string } {
     if (!params.items || params.items.length === 0) {
       return { success: false, message: 'Cart cannot be empty.' };
     }
@@ -33,15 +46,17 @@ export class OrderService {
       return { success: false, message: 'Booking record not found.' };
     }
 
-    const orderId = `ORD-${Date.now().toString().slice(-6)}`;
+    const orderId = params.orderId || `ORD-${Date.now().toString().slice(-6)}`;
     const now = new Date().toISOString();
 
     let orderSubtotal = 0;
+    const itemNotes: Record<string, string> = {};
     const validatedItems: Array<{
       foodId: string;
       quantity: number;
       unitPrice: number;
       subtotal: number;
+      specialInstructions?: string;
     }> = [];
 
     // Verify each item against Menu tab
@@ -59,30 +74,32 @@ export class OrderService {
       const subtotal = qty * unitPrice;
 
       orderSubtotal += subtotal;
+      if (item.specialInstructions?.trim()) {
+        itemNotes[food.Food_ID] = item.specialInstructions.trim();
+      }
       validatedItems.push({
         foodId: food.Food_ID,
         quantity: qty,
         unitPrice,
         subtotal,
+        specialInstructions: item.specialInstructions?.trim() || '',
       });
     }
 
-    // Insert Order row
-    // Order_ID, Booking_ID, Order_DateTime, Order_Status, Authorized_At, Authorized_By
+    // Insert Order row immediately with New_Order so Kitchen sees it right away
     db.insertRow('Orders', {
       Order_ID: orderId,
       Booking_ID: params.bookingId,
       Order_DateTime: now,
-      Order_Status: 'Submitted',
-      Authorized_At: '',
-      Authorized_By: '',
+      Order_Status: 'New_Order',
+      Authorized_At: now,
+      Authorized_By: params.createdByRole === 'Staff' ? 'Staff' : 'Direct Customer Order',
     });
 
     // Insert Order_Items rows
-    // Order_Item_ID, Order_ID, Food_ID, Quantity, Unit_Price, Subtotal, Item_Status, Cancellation_Reason, Replacement_Food_ID, Price_Difference
     for (let i = 0; i < validatedItems.length; i++) {
       const itm = validatedItems[i];
-      const itemId = `ITEM-${Date.now().toString().slice(-5)}-${i + 1}`;
+      const itemId = `ITEM-${orderId.replace('ORD-', '')}-${i + 1}`;
 
       db.insertRow('Order_Items', {
         Order_Item_ID: itemId,
@@ -91,28 +108,33 @@ export class OrderService {
         Quantity: itm.quantity,
         Unit_Price: itm.unitPrice,
         Subtotal: itm.subtotal,
-        Item_Status: 'Pending_Authorization',
+        Item_Status: 'New_Order',
         Cancellation_Reason: '',
         Replacement_Food_ID: '',
         Price_Difference: 0,
       });
     }
 
-    // Record initial status in Order_Status_History
+    // Record initial status + special instructions metadata in Order_Status_History
     db.insertRow('Order_Status_History', {
       History_ID: `HIST-${Date.now().toString().slice(-6)}`,
       Order_ID: orderId,
-      Order_Status: 'Submitted',
+      Order_Status: 'New_Order',
       Changed_At: now,
       Changed_By: params.createdByRole,
-      Change_Reason: 'Order submitted by customer/waiter',
+      Change_Reason: JSON.stringify({
+        summary: 'Order placed and routed immediately to Kitchen',
+        specialInstructions: (params.specialInstructions || '').trim(),
+        itemNotes,
+      }),
     });
 
     return {
       success: true,
-      message: 'Order placed successfully. Awaiting staff authorization for kitchen prep.',
+      message: 'Order confirmed and sent directly to the Kitchen Display!',
       orderId,
       totalAmount: orderSubtotal,
+      orderStatus: 'New_Order',
     };
   }
 
@@ -235,53 +257,113 @@ export class OrderService {
 }
 
 export class KitchenService {
+  private static extractOrderMeta(orderId: string): {
+    specialInstructions: string;
+    itemNotes: Record<string, string>;
+  } {
+    const history = db.findRows('Order_Status_History', (h) => h.Order_ID === orderId);
+    for (const h of history) {
+      if (h.Change_Reason && String(h.Change_Reason).trim().startsWith('{')) {
+        try {
+          const parsed = JSON.parse(h.Change_Reason);
+          return {
+            specialInstructions: parsed.specialInstructions || '',
+            itemNotes: parsed.itemNotes || {},
+          };
+        } catch {
+          // Ignore malformed JSON notes
+        }
+      }
+    }
+    return { specialInstructions: '', itemNotes: {} };
+  }
+
   /**
-   * Retrieves all orders authorized by staff for kitchen preparation.
-   * Strictly filters out un-authorized orders.
+   * Retrieves all orders for Kitchen Display (and Staff Order tracking).
+   * Immediately includes New_Order orders as soon as customer submits, independent of billing.
+   * Strictly deduplicated by Order_ID.
    */
-  public static getKitchenQueue(): Array<SheetRow & { items: any[]; tableNumber: string }> {
-    const authorizedOrders = db.findRows(
-      'Orders',
-      (o) =>
-        o.Order_Status === 'Authorized' ||
-        o.Order_Status === 'In_Preparation' ||
-        o.Order_Status === 'Ready_For_Serving'
-    );
+  public static getKitchenQueue(includeServed = true): Array<
+    SheetRow & {
+      items: any[];
+      tableNumber: string;
+      customerName: string;
+      specialInstructions: string;
+    }
+  > {
+    const visibleStatuses = new Set([
+      'New_Order',
+      'Submitted',
+      'Accepted',
+      'Preparing',
+      'Ready',
+      'Authorized',
+      'In_Preparation',
+      'Ready_For_Serving',
+    ]);
+    if (includeServed) visibleStatuses.add('Served');
+
+    const rawOrders = db.findRows('Orders', (o) => visibleStatuses.has(o.Order_Status));
+    const uniqueOrdersMap = new Map<string, SheetRow>();
+    for (const o of rawOrders) {
+      if (!uniqueOrdersMap.has(o.Order_ID)) {
+        uniqueOrdersMap.set(o.Order_ID, o);
+      }
+    }
 
     const menu = db.getRows('Menu');
     const tables = db.getRows('Tables');
     const reservations = db.getRows('Table_Reservations');
+    const bookings = db.getRows('Bookings');
+    const customers = db.getRows('Customers');
 
-    return authorizedOrders.map((order) => {
-      const items = db.findRows('Order_Items', (i) => i.Order_ID === order.Order_ID);
-      const enrichedItems = items.map((i) => {
-        const food = menu.find((m) => m.Food_ID === i.Food_ID);
+    return Array.from(uniqueOrdersMap.values())
+      .map((order): any => {
+        const meta = this.extractOrderMeta(order.Order_ID);
+        const items = db.findRows('Order_Items', (i) => i.Order_ID === order.Order_ID);
+        const seenItemIds = new Set<string>();
+        const enrichedItems = items
+          .filter((i) => {
+            if (seenItemIds.has(i.Order_Item_ID)) return false;
+            seenItemIds.add(i.Order_Item_ID);
+            return true;
+          })
+          .map((i) => {
+            const food = menu.find((m) => m.Food_ID === i.Food_ID);
+            return {
+              ...i,
+              foodName: food?.Food_Name || 'Dish',
+              prepTimeMinutes: food?.Prep_Time_Minutes || 15,
+              category: food?.Category || '',
+              specialInstructions: meta.itemNotes[i.Food_ID] || '',
+            };
+          });
+
+        const res = reservations.find((r) => r.Booking_ID === order.Booking_ID);
+        const table = res ? tables.find((t) => t.Table_ID === res.Table_ID) : undefined;
+        const booking = bookings.find((b) => b.Booking_ID === order.Booking_ID);
+        const customer = booking
+          ? customers.find((c) => c.Customer_ID === booking.Customer_ID)
+          : undefined;
+
         return {
-          ...i,
-          foodName: food?.Food_Name || 'Unknown Dish',
-          prepTimeMinutes: food?.Prep_Time_Minutes || 15,
-          category: food?.Category || '',
+          ...order,
+          items: enrichedItems,
+          tableNumber: table?.Table_Number || (res?.Table_ID ? res.Table_ID : 'Counter / Walk-in'),
+          customerName: customer?.Customer_Name || 'Guest',
+          specialInstructions: meta.specialInstructions,
         };
-      });
-
-      const res = reservations.find((r) => r.Booking_ID === order.Booking_ID);
-      const table = res ? tables.find((t) => t.Table_ID === res.Table_ID) : undefined;
-
-      return {
-        ...order,
-        items: enrichedItems,
-        tableNumber: table?.Table_Number || 'TBD',
-      };
-    });
+      })
+      .sort((a, b) => new Date(b.Order_DateTime || 0).getTime() - new Date(a.Order_DateTime || 0).getTime());
   }
 
   /**
-   * Updates an order's preparation stage with audit logging
-   * Allowed transitions: Authorized -> In_Preparation -> Ready_For_Serving -> Served
+   * Updates an order's preparation stage with audit logging.
+   * Supports New_Order -> Accepted -> Preparing -> Ready -> Served and legacy aliases.
    */
   public static updatePreparationStatus(params: {
     orderId: string;
-    newStatus: 'In_Preparation' | 'Ready_For_Serving' | 'Served';
+    newStatus: KitchenOrderStatus;
     kitchenUserName: string;
     reason?: string;
   }): { success: boolean; message: string } {
@@ -289,9 +371,14 @@ export class KitchenService {
     if (!order) return { success: false, message: 'Order ticket not found.' };
 
     const validTransitions: Record<string, string[]> = {
-      Authorized: ['In_Preparation'],
-      In_Preparation: ['Ready_For_Serving'],
-      Ready_For_Serving: ['Served'],
+      New_Order: ['Accepted', 'Preparing', 'In_Preparation'],
+      Submitted: ['Accepted', 'Preparing', 'In_Preparation', 'Authorized'],
+      Accepted: ['Preparing', 'In_Preparation', 'Ready'],
+      Preparing: ['Ready', 'Ready_For_Serving', 'Served'],
+      Ready: ['Served'],
+      Authorized: ['Accepted', 'Preparing', 'In_Preparation'],
+      In_Preparation: ['Preparing', 'Ready', 'Ready_For_Serving'],
+      Ready_For_Serving: ['Ready', 'Served'],
     };
 
     const allowed = validTransitions[order.Order_Status] || [];
@@ -308,9 +395,11 @@ export class KitchenService {
       Order_Status: params.newStatus,
     });
 
-    // Update line items status
     const itemStatusMap: Record<string, string> = {
-      In_Preparation: 'Cooking',
+      Accepted: 'Accepted',
+      Preparing: 'Preparing',
+      In_Preparation: 'Preparing',
+      Ready: 'Ready',
       Ready_For_Serving: 'Ready',
       Served: 'Served',
     };
@@ -324,7 +413,6 @@ export class KitchenService {
       }
     }
 
-    // Record audit trail in Order_Status_History
     db.insertRow('Order_Status_History', {
       History_ID: `HIST-${Date.now().toString().slice(-6)}`,
       Order_ID: params.orderId,
@@ -337,6 +425,54 @@ export class KitchenService {
     return {
       success: true,
       message: `Order ${params.orderId} marked as ${params.newStatus.replace(/_/g, ' ')}.`,
+    };
+  }
+
+  /**
+   * Allows multi-item status tracking in Kitchen Display without locking whole-order flexibility.
+   */
+  public static updateOrderItemStatus(params: {
+    orderItemId: string;
+    newStatus: 'Accepted' | 'Preparing' | 'Ready' | 'Served';
+    kitchenUserName: string;
+  }): { success: boolean; message: string; orderId?: string } {
+    const item = db.findOne('Order_Items', (i) => i.Order_Item_ID === params.orderItemId);
+    if (!item) return { success: false, message: 'Order item not found.' };
+
+    db.updateRow('Order_Items', 'Order_Item_ID', params.orderItemId, {
+      Item_Status: params.newStatus,
+    });
+
+    const allItems = db.findRows(
+      'Order_Items',
+      (i) => i.Order_ID === item.Order_ID && i.Item_Status !== 'Cancelled'
+    );
+    const allServed = allItems.every((i) => i.Item_Status === 'Served');
+    const allReadyOrServed = allItems.every((i) => i.Item_Status === 'Ready' || i.Item_Status === 'Served');
+    const anyPreparing = allItems.some((i) => i.Item_Status === 'Preparing');
+
+    let nextOrderStatus: string | null = null;
+    if (allServed) nextOrderStatus = 'Served';
+    else if (allReadyOrServed) nextOrderStatus = 'Ready';
+    else if (anyPreparing) nextOrderStatus = 'Preparing';
+
+    if (nextOrderStatus) {
+      db.updateRow('Orders', 'Order_ID', item.Order_ID, { Order_Status: nextOrderStatus });
+    }
+
+    db.insertRow('Order_Status_History', {
+      History_ID: `HIST-${Date.now().toString().slice(-6)}`,
+      Order_ID: item.Order_ID,
+      Order_Status: `Item:${params.orderItemId}->${params.newStatus}`,
+      Changed_At: new Date().toISOString(),
+      Changed_By: params.kitchenUserName,
+      Change_Reason: `Item ${item.Food_ID} updated to ${params.newStatus}`,
+    });
+
+    return {
+      success: true,
+      orderId: item.Order_ID,
+      message: `Item updated to ${params.newStatus}.`,
     };
   }
 }

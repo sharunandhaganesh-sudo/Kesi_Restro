@@ -1,18 +1,21 @@
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
- * 
- * 4. Kitchen Website (Kitchen Display System - KDS - Apple Design System)
- * Strictly isolated:
- * - Shows ONLY staff-authorized orders.
- * - Displays table numbers, dish quantities, prep timers.
- * - Allowed transitions: Authorized -> In_Preparation -> Ready_For_Serving -> Served.
- * - Cannot allocate tables, verify arrivals, generate bills, or approve refunds.
+ *
+ * 4. Kitchen Website (Kitchen Display System - KDS) — Treat & Taste Family Restaurant
+ * - Immediately receives new customer orders without waiting for bill generation
+ * - Highlights New Order tickets prominently
+ * - Displays Order ID, Table number, Customer name, Ordered items, Quantities,
+ *   Special instructions, Placement time, and Status
+ * - Supports full status progression: New Order -> Accepted -> Preparing -> Ready -> Served
+ * - Supports individual item status tracking for multi-item orders
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { RequestDispatcher } from '../../backend/dispatcher';
 import { UserSessionState } from '../types';
+import { BrandLogo } from '../components/BrandLogo';
+import { BRAND_CONFIG } from '../../config/branding';
 import {
   ChefHat,
   Clock,
@@ -20,10 +23,12 @@ import {
   AlertCircle,
   Play,
   Bell,
-  Utensils,
   RefreshCw,
   LogOut,
   Flame,
+  Sparkles,
+  MessageSquare,
+  User,
   Check,
 } from 'lucide-react';
 
@@ -33,40 +38,84 @@ interface KitchenWebsiteProps {
   onLogout: () => void;
 }
 
+type FilterStatus = 'ACTIVE' | 'New_Order' | 'Accepted' | 'Preparing' | 'Ready' | 'Served' | 'ALL';
+
+function normalizeKitchenStatus(raw: string): 'New_Order' | 'Accepted' | 'Preparing' | 'Ready' | 'Served' {
+  switch (raw) {
+    case 'New_Order':
+    case 'Submitted':
+    case 'Pending_Authorization':
+      return 'New_Order';
+    case 'Accepted':
+    case 'Authorized':
+      return 'Accepted';
+    case 'Preparing':
+    case 'In_Preparation':
+      return 'Preparing';
+    case 'Ready':
+    case 'Ready_For_Serving':
+      return 'Ready';
+    case 'Served':
+      return 'Served';
+    default:
+      return 'New_Order';
+  }
+}
+
 export const KitchenWebsite: React.FC<KitchenWebsiteProps> = ({
   session,
   onSetSession,
   onLogout,
 }) => {
-  // Login form state
   const [identifier, setIdentifier] = useState<string>('kitchen');
   const [password, setPassword] = useState<string>('DemoPass@2026');
   const [authError, setAuthError] = useState<string>('');
   const [authLoading, setAuthLoading] = useState<boolean>(false);
 
-  // KDS Orders state
   const [kitchenOrders, setKitchenOrders] = useState<any[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
+  const [loadError, setLoadError] = useState<string>('');
+  const [statusFilter, setStatusFilter] = useState<FilterStatus>('ACTIVE');
+  const [lastSyncedAt, setLastSyncedAt] = useState<string>('');
   const [notice, setNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  useEffect(() => {
-    if (session?.sessionId && (session.role === 'Kitchen' || session.role === 'Admin')) {
-      loadKitchenQueue();
-      const interval = setInterval(loadKitchenQueue, 4000);
-      return () => clearInterval(interval);
-    }
-  }, [session]);
-
-  async function loadKitchenQueue() {
+  const loadKitchenQueue = useCallback(async (showSpinner = false) => {
     if (!session?.sessionId) return;
+    if (showSpinner) setLoading(true);
+    setLoadError('');
+
     const res = await RequestDispatcher.dispatch({
       action: 'getKitchenQueue',
       sessionId: session.sessionId,
     });
-    if (res.success && res.data) {
-      setKitchenOrders(res.data);
+
+    if (showSpinner) setLoading(false);
+
+    if (res.success && Array.isArray(res.data)) {
+      // Strictly deduplicate by Order_ID so repeated refreshes never duplicate tickets
+      const uniqueMap = new Map<string, any>();
+      for (const ticket of res.data) {
+        if (ticket?.Order_ID && !uniqueMap.has(ticket.Order_ID)) {
+          uniqueMap.set(ticket.Order_ID, {
+            ...ticket,
+            normalizedStatus: normalizeKitchenStatus(ticket.Order_Status),
+          });
+        }
+      }
+      setKitchenOrders(Array.from(uniqueMap.values()));
+      setLastSyncedAt(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+    } else if (!res.success) {
+      setLoadError(res.error?.message || 'Unable to sync live kitchen orders from server.');
     }
-  }
+  }, [session?.sessionId]);
+
+  useEffect(() => {
+    if (session?.sessionId && (session.role === 'Kitchen' || session.role === 'Admin')) {
+      loadKitchenQueue(true);
+      const interval = setInterval(() => loadKitchenQueue(false), 4000);
+      return () => clearInterval(interval);
+    }
+  }, [session, loadKitchenQueue]);
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
@@ -93,7 +142,7 @@ export const KitchenWebsite: React.FC<KitchenWebsiteProps> = ({
 
   async function handleUpdateStatus(
     orderId: string,
-    newStatus: 'In_Preparation' | 'Ready_For_Serving' | 'Served'
+    newStatus: 'Accepted' | 'Preparing' | 'Ready' | 'Served'
   ) {
     if (!session?.sessionId) return;
     const res = await RequestDispatcher.dispatch({
@@ -103,10 +152,29 @@ export const KitchenWebsite: React.FC<KitchenWebsiteProps> = ({
     });
 
     if (res.success) {
-      showToast('success', res.message || 'Status updated.');
-      loadKitchenQueue();
+      showToast('success', res.message || `Order ${orderId} updated to ${newStatus}.`);
+      loadKitchenQueue(false);
     } else {
       showToast('error', res.error?.message || 'Failed to update preparation status.');
+    }
+  }
+
+  async function handleUpdateItemStatus(
+    orderItemId: string,
+    newStatus: 'Accepted' | 'Preparing' | 'Ready' | 'Served'
+  ) {
+    if (!session?.sessionId) return;
+    const res = await RequestDispatcher.dispatch({
+      action: 'updateOrderItemStatus',
+      sessionId: session.sessionId,
+      payload: { orderItemId, newStatus },
+    });
+
+    if (res.success) {
+      showToast('success', res.message || `Item marked ${newStatus}.`);
+      loadKitchenQueue(false);
+    } else {
+      showToast('error', res.error?.message || 'Could not update item status.');
     }
   }
 
@@ -118,20 +186,39 @@ export const KitchenWebsite: React.FC<KitchenWebsiteProps> = ({
   const isKitchenAuthenticated =
     session && (session.role === 'Kitchen' || session.role === 'Admin');
 
-  // Station counts
-  const pendingPrepCount = kitchenOrders.filter((o) => o.Order_Status === 'Authorized').length;
-  const cookingCount = kitchenOrders.filter((o) => o.Order_Status === 'In_Preparation').length;
-  const readyCount = kitchenOrders.filter((o) => o.Order_Status === 'Ready_For_Serving').length;
+  // Counts across all 5 kitchen stages
+  const newOrderCount = kitchenOrders.filter((o) => o.normalizedStatus === 'New_Order').length;
+  const acceptedCount = kitchenOrders.filter((o) => o.normalizedStatus === 'Accepted').length;
+  const preparingCount = kitchenOrders.filter((o) => o.normalizedStatus === 'Preparing').length;
+  const readyCount = kitchenOrders.filter((o) => o.normalizedStatus === 'Ready').length;
+  const servedCount = kitchenOrders.filter((o) => o.normalizedStatus === 'Served').length;
+
+  const displayedOrders = kitchenOrders.filter((o) => {
+    if (statusFilter === 'ALL') return true;
+    if (statusFilter === 'ACTIVE') return o.normalizedStatus !== 'Served';
+    return o.normalizedStatus === statusFilter;
+  });
+
+  const nextItemStage = (
+    current: string
+  ): 'Accepted' | 'Preparing' | 'Ready' | 'Served' | null => {
+    const norm = normalizeKitchenStatus(current);
+    if (norm === 'New_Order') return 'Accepted';
+    if (norm === 'Accepted') return 'Preparing';
+    if (norm === 'Preparing') return 'Ready';
+    if (norm === 'Ready') return 'Served';
+    return null;
+  };
 
   return (
-    <div className="min-h-screen bg-[#F5F5F7] text-[#1D1D1F] pb-24">
+    <div className="min-h-screen bg-[#FFF9F0] text-[#2D1609] pb-24">
       {/* Toast Notification */}
       {notice && (
         <div
           className={`fixed top-20 right-4 z-50 flex items-center space-x-2 px-4 py-3 rounded-2xl shadow-lg border text-sm font-medium transition-all ${
             notice.type === 'success'
-              ? 'bg-white border-[#248A3D]/30 text-[#248A3D]'
-              : 'bg-white border-[#D70015]/30 text-[#D70015]'
+              ? 'bg-white border-[#248A3D]/40 text-[#248A3D]'
+              : 'bg-white border-[#D70015]/40 text-[#D70015]'
           }`}
         >
           {notice.type === 'success' ? (
@@ -144,24 +231,28 @@ export const KitchenWebsite: React.FC<KitchenWebsiteProps> = ({
       )}
 
       {!isKitchenAuthenticated ? (
-        /* Login Card */
-        <div className="max-w-md mx-auto pt-16 px-4">
-          <div className="bg-white rounded-3xl p-8 shadow-xs border border-[#D2D2D7]/70 space-y-6">
-            <div className="text-center space-y-2">
-              <div className="w-14 h-14 rounded-2xl bg-[#0071E3]/10 text-[#0071E3] flex items-center justify-center mx-auto">
-                <ChefHat className="w-7 h-7" />
+        /* Kitchen Login Card */
+        <div className="max-w-md mx-auto pt-14 px-4">
+          <div className="bg-white rounded-3xl p-8 shadow-sm border border-[#E6D5C3] space-y-6">
+            <div className="text-center space-y-3">
+              <div className="flex justify-center">
+                <BrandLogo size="lg" />
               </div>
-              <h2 className="text-2xl font-semibold tracking-tight text-[#1D1D1F]">
-                Kitchen Display System
+              <div className="inline-flex items-center space-x-1.5 px-3 py-1 rounded-full bg-[#FDF4E7] text-[#F56A00] text-xs font-bold border border-[#E6D5C3]">
+                <ChefHat className="w-3.5 h-3.5" />
+                <span>Kitchen Display System (KDS)</span>
+              </div>
+              <h2 className="text-2xl font-bold tracking-tight text-[#3B1A08]">
+                Kitchen Culinary Sign In
               </h2>
-              <p className="text-xs text-[#6E6E73] max-w-xs mx-auto">
-                Staff-authorized culinary tickets, live staging, and preparation tracking.
+              <p className="text-xs text-[#735847] max-w-xs mx-auto">
+                Instant live order tickets, special instructions, multi-item tracking, and status controls.
               </p>
             </div>
 
             <form onSubmit={handleLogin} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-[#1D1D1F] mb-1.5">
+                <label className="block text-xs font-semibold text-[#3B1A08] mb-1.5">
                   Chef Username or Email
                 </label>
                 <input
@@ -170,12 +261,12 @@ export const KitchenWebsite: React.FC<KitchenWebsiteProps> = ({
                   value={identifier}
                   onChange={(e) => setIdentifier(e.target.value)}
                   placeholder="e.g. kitchen"
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-[#D2D2D7] text-sm text-[#1D1D1F] placeholder-[#6E6E73]/50 focus:outline-none focus:border-[#0071E3] focus:ring-2 focus:ring-[#0071E3]/20 transition"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-[#E6D5C3] bg-[#FFF9F0]/40 text-sm text-[#2D1609] focus:outline-none focus:border-[#F56A00] focus:ring-2 focus:ring-[#F56A00]/20 transition"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-[#1D1D1F] mb-1.5">
+                <label className="block text-xs font-semibold text-[#3B1A08] mb-1.5">
                   Password
                 </label>
                 <input
@@ -183,10 +274,10 @@ export const KitchenWebsite: React.FC<KitchenWebsiteProps> = ({
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-[#D2D2D7] text-sm text-[#1D1D1F] placeholder-[#6E6E73]/50 focus:outline-none focus:border-[#0071E3] focus:ring-2 focus:ring-[#0071E3]/20 transition"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-[#E6D5C3] bg-[#FFF9F0]/40 text-sm text-[#2D1609] focus:outline-none focus:border-[#F56A00] focus:ring-2 focus:ring-[#F56A00]/20 transition"
                 />
-                <span className="block text-[11px] text-[#6E6E73] mt-1.5">
-                  Default demo kitchen password: <code className="bg-[#F5F5F7] px-1.5 py-0.5 rounded text-[#1D1D1F] font-mono">DemoPass@2026</code>
+                <span className="block text-[11px] text-[#735847] mt-1.5">
+                  Default demo kitchen password: <code className="bg-[#FDF4E7] px-1.5 py-0.5 rounded text-[#3B1A08] font-mono">DemoPass@2026</code>
                 </span>
               </div>
 
@@ -200,9 +291,9 @@ export const KitchenWebsite: React.FC<KitchenWebsiteProps> = ({
               <button
                 type="submit"
                 disabled={authLoading}
-                className="w-full py-3 rounded-xl bg-[#0071E3] hover:bg-[#0077ED] text-white font-medium text-sm shadow-xs transition disabled:opacity-50"
+                className="w-full py-3 rounded-full bg-[#F56A00] hover:bg-[#DC5B00] text-white font-semibold text-sm shadow-xs transition disabled:opacity-50 cursor-pointer"
               >
-                {authLoading ? 'Signing in...' : 'Sign In as Kitchen Chef'}
+                {authLoading ? 'Signing in...' : 'Sign In to Kitchen Display'}
               </button>
             </form>
           </div>
@@ -210,180 +301,312 @@ export const KitchenWebsite: React.FC<KitchenWebsiteProps> = ({
       ) : (
         /* KDS Live Display */
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-6">
-          {/* Top Bar with Counters */}
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-white p-6 rounded-3xl shadow-xs border border-[#D2D2D7]/70">
+          {/* Top Bar */}
+          <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4 bg-white p-6 rounded-3xl shadow-xs border border-[#E6D5C3]">
             <div className="flex items-center space-x-3.5">
-              <div className="p-3 rounded-2xl bg-[#0071E3]/10 text-[#0071E3]">
-                <ChefHat className="w-6 h-6" />
-              </div>
+              <BrandLogo size="md" variant="icon" />
               <div>
-                <h1 className="text-xl font-semibold tracking-tight text-[#1D1D1F]">
-                  Kitchen Display Tickets
-                </h1>
-                <p className="text-xs text-[#6E6E73]">
-                  Authorized preparation queue • Workstation: Chef <strong className="text-[#1D1D1F]">{session.name}</strong>
+                <div className="flex items-center space-x-2">
+                  <h1 className="text-xl font-bold tracking-tight text-[#3B1A08]">
+                    {BRAND_CONFIG.name} — Kitchen Display Tickets
+                  </h1>
+                  <span className="inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-[#248A3D]/10 text-[#248A3D] border border-[#248A3D]/20">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#248A3D] animate-pulse" />
+                    <span>Live Auto-Sync (4s)</span>
+                  </span>
+                </div>
+                <p className="text-xs text-[#735847]">
+                  Station Chef: <strong className="text-[#3B1A08]">{session.name}</strong>
+                  {lastSyncedAt && ` • Last synced at ${lastSyncedAt}`}
                 </p>
               </div>
             </div>
 
-            {/* Counters and Controls */}
-            <div className="flex flex-wrap items-center gap-2.5 text-xs">
-              <div className="flex items-center space-x-2 px-3 py-1.5 rounded-full bg-[#0071E3]/10 text-[#0071E3]">
-                <Clock className="w-3.5 h-3.5" />
-                <span className="font-medium">
-                  Authorized: <strong>{pendingPrepCount}</strong>
-                </span>
-              </div>
-              <div className="flex items-center space-x-2 px-3 py-1.5 rounded-full bg-amber-100 text-amber-800">
-                <Flame className="w-3.5 h-3.5" />
-                <span className="font-medium">
-                  Cooking: <strong>{cookingCount}</strong>
-                </span>
-              </div>
-              <div className="flex items-center space-x-2 px-3 py-1.5 rounded-full bg-[#248A3D]/10 text-[#248A3D]">
-                <Bell className="w-3.5 h-3.5" />
-                <span className="font-medium">
-                  Ready: <strong>{readyCount}</strong>
-                </span>
-              </div>
-
+            <div className="flex flex-wrap items-center gap-2 text-xs">
               <button
-                onClick={loadKitchenQueue}
+                onClick={() => loadKitchenQueue(true)}
                 title="Refresh Tickets"
-                className="p-2 rounded-xl bg-[#F5F5F7] border border-[#D2D2D7]/80 hover:bg-[#E5E5EA] text-[#1D1D1F] transition"
+                className="flex items-center space-x-1.5 px-3.5 py-2 rounded-full bg-[#FDF4E7] border border-[#E6D5C3] hover:bg-[#F5E6D3] text-[#3B1A08] font-semibold transition cursor-pointer"
               >
-                <RefreshCw className="w-4 h-4 text-[#6E6E73]" />
+                <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-[#F56A00]' : 'text-[#3B1A08]'}`} />
+                <span>Refresh</span>
               </button>
               <button
                 onClick={onLogout}
                 title="Sign Out"
-                className="p-2 rounded-xl bg-[#D70015]/10 text-[#D70015] hover:bg-[#D70015]/20 transition"
+                className="flex items-center space-x-1.5 px-3.5 py-2 rounded-full bg-[#D70015]/10 text-[#D70015] hover:bg-[#D70015]/20 font-semibold transition cursor-pointer"
               >
-                <LogOut className="w-4 h-4" />
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Sign Out</span>
               </button>
             </div>
           </div>
 
+          {/* 5-Stage Filter & Counter Pills */}
+          <div className="flex flex-wrap items-center gap-2 bg-[#FDF4E7] p-2 rounded-2xl border border-[#E6D5C3]">
+            {[
+              { id: 'ACTIVE', label: 'Active Queue', count: newOrderCount + acceptedCount + preparingCount + readyCount },
+              { id: 'New_Order', label: 'New Orders', count: newOrderCount, highlight: newOrderCount > 0 },
+              { id: 'Accepted', label: 'Accepted', count: acceptedCount },
+              { id: 'Preparing', label: 'Preparing', count: preparingCount },
+              { id: 'Ready', label: 'Ready', count: readyCount },
+              { id: 'Served', label: 'Served', count: servedCount },
+              { id: 'ALL', label: 'All Orders', count: kitchenOrders.length },
+            ].map((pill) => {
+              const active = statusFilter === pill.id;
+              return (
+                <button
+                  key={pill.id}
+                  onClick={() => setStatusFilter(pill.id as FilterStatus)}
+                  className={`flex items-center space-x-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
+                    active
+                      ? 'bg-[#3B1A08] text-white shadow-xs'
+                      : pill.highlight
+                      ? 'bg-[#F56A00]/15 text-[#F56A00] border border-[#F56A00]/40 hover:bg-[#F56A00]/25'
+                      : 'bg-white text-[#735847] hover:text-[#3B1A08] border border-[#E6D5C3]'
+                  }`}
+                >
+                  <span>{pill.label}</span>
+                  <span
+                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                      active
+                        ? 'bg-[#F56A00] text-white'
+                        : pill.highlight
+                        ? 'bg-[#F56A00] text-white animate-pulse'
+                        : 'bg-[#FDF4E7] text-[#3B1A08]'
+                    }`}
+                  >
+                    {pill.count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Error Banner */}
+          {loadError && (
+            <div className="p-4 rounded-2xl bg-[#D70015]/10 border border-[#D70015]/30 text-[#D70015] text-xs font-medium flex items-center space-x-2">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>{loadError}</span>
+            </div>
+          )}
+
           {/* Ticket Grid */}
-          {kitchenOrders.length === 0 ? (
-            <div className="text-center py-24 bg-white rounded-3xl border border-[#D2D2D7]/70 space-y-3">
-              <div className="w-16 h-16 rounded-3xl bg-[#F5F5F7] flex items-center justify-center mx-auto text-[#6E6E73]">
+          {loading && kitchenOrders.length === 0 ? (
+            <div className="text-center py-20 bg-white rounded-3xl border border-[#E6D5C3] text-xs text-[#735847]">
+              Syncing live orders from server &amp; Google Sheets...
+            </div>
+          ) : displayedOrders.length === 0 ? (
+            <div className="text-center py-20 bg-white rounded-3xl border border-[#E6D5C3] space-y-3">
+              <div className="w-16 h-16 rounded-3xl bg-[#FDF4E7] flex items-center justify-center mx-auto text-[#F56A00]">
                 <ChefHat className="w-8 h-8" />
               </div>
-              <h3 className="text-lg font-semibold text-[#1D1D1F]">
-                Kitchen Queue is Clear
+              <h3 className="text-lg font-bold text-[#3B1A08]">
+                No Orders in This View
               </h3>
-              <p className="text-xs text-[#6E6E73] max-w-sm mx-auto">
-                No orders are currently awaiting preparation. New tickets will appear automatically when staff authorizes customer orders.
+              <p className="text-xs text-[#735847] max-w-sm mx-auto">
+                New customer food orders appear here immediately when placed — independent of bill generation.
               </p>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-              {kitchenOrders.map((ticket) => {
-                const isAuthorized = ticket.Order_Status === 'Authorized';
-                const isCooking = ticket.Order_Status === 'In_Preparation';
-                const isReady = ticket.Order_Status === 'Ready_For_Serving';
+              {displayedOrders.map((ticket) => {
+                const status = ticket.normalizedStatus;
+                const isNew = status === 'New_Order';
+                const isAccepted = status === 'Accepted';
+                const isPreparing = status === 'Preparing';
+                const isReady = status === 'Ready';
+                const isServed = status === 'Served';
 
                 return (
                   <div
                     key={ticket.Order_ID}
-                    className={`bg-white rounded-3xl p-6 shadow-xs border flex flex-col justify-between space-y-4 transition ${
-                      isAuthorized
-                        ? 'border-[#0071E3]/40'
-                        : isCooking
-                        ? 'border-amber-300'
-                        : 'border-[#248A3D]/40'
+                    className={`bg-white rounded-3xl p-5 sm:p-6 shadow-sm border-2 flex flex-col justify-between space-y-4 transition ${
+                      isNew
+                        ? 'border-[#F56A00] ring-2 ring-[#F4B41A]/30'
+                        : isAccepted
+                        ? 'border-[#3B1A08]/40'
+                        : isPreparing
+                        ? 'border-[#F4B41A]'
+                        : isReady
+                        ? 'border-[#248A3D]/60'
+                        : 'border-[#E6D5C3] opacity-85'
                     }`}
                   >
-                    {/* Header */}
-                    <div className="flex items-center justify-between pb-3 border-b border-[#D2D2D7]/50">
-                      <div>
-                        <span className="text-[11px] font-semibold text-[#0071E3]">
-                          Table {ticket.tableNumber}
-                        </span>
-                        <h4 className="text-base font-mono font-semibold text-[#1D1D1F]">
-                          {ticket.Order_ID}
-                        </h4>
-                      </div>
-                      <span
-                        className={`px-3 py-1 rounded-full text-[10px] font-semibold uppercase ${
-                          isAuthorized
-                            ? 'bg-[#0071E3]/10 text-[#0071E3]'
-                            : isCooking
-                            ? 'bg-amber-100 text-amber-800 animate-pulse'
-                            : 'bg-[#248A3D]/10 text-[#248A3D]'
-                        }`}
-                      >
-                        {ticket.Order_Status.replace(/_/g, ' ')}
-                      </span>
-                    </div>
-
-                    {/* Items List */}
-                    <div className="space-y-2.5 flex-1">
-                      <span className="text-[10px] font-medium uppercase tracking-wider text-[#6E6E73]">
-                        Items to Prepare:
-                      </span>
-                      <div className="space-y-2 divide-y divide-[#D2D2D7]/40">
-                        {ticket.items.map((item: any) => (
-                          <div
-                            key={item.Order_Item_ID}
-                            className="pt-2 flex items-center justify-between text-xs"
-                          >
-                            <div className="flex items-center space-x-2.5">
-                              <span className="w-5 h-5 rounded-md bg-[#1D1D1F] text-white font-semibold text-[11px] flex items-center justify-center">
-                                {item.Quantity}
-                              </span>
-                              <strong className="text-[#1D1D1F] font-medium">{item.foodName}</strong>
-                            </div>
-                            <span className="text-[11px] text-[#6E6E73] flex items-center space-x-1">
-                              <Clock className="w-3 h-3 text-[#6E6E73]" />
-                              <span>{item.prepTimeMinutes}m</span>
+                    {/* Ticket Header */}
+                    <div className="space-y-2 pb-3 border-b border-[#E6D5C3]">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="flex items-center space-x-2">
+                            <span className="px-2.5 py-0.5 rounded-lg bg-[#3B1A08] text-[#F4B41A] text-xs font-bold">
+                              Table {ticket.tableNumber || 'Counter'}
                             </span>
+                            {isNew && (
+                              <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full bg-[#F56A00] text-white text-[10px] font-bold uppercase animate-pulse">
+                                <Sparkles className="w-3 h-3" />
+                                <span>New Order</span>
+                              </span>
+                            )}
                           </div>
-                        ))}
+                          <h4 className="text-base font-mono font-bold text-[#3B1A08] mt-1.5">
+                            {ticket.Order_ID}
+                          </h4>
+                        </div>
+
+                        <span
+                          className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide ${
+                            isNew
+                              ? 'bg-[#F56A00]/15 text-[#F56A00]'
+                              : isAccepted
+                              ? 'bg-[#3B1A08]/10 text-[#3B1A08]'
+                              : isPreparing
+                              ? 'bg-[#F4B41A]/25 text-[#8A5A00]'
+                              : isReady
+                              ? 'bg-[#248A3D]/15 text-[#248A3D]'
+                              : 'bg-[#FDF4E7] text-[#735847]'
+                          }`}
+                        >
+                          {status.replace(/_/g, ' ')}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center justify-between text-xs text-[#735847]">
+                        <span className="flex items-center space-x-1.5 font-medium text-[#2D1609]">
+                          <User className="w-3.5 h-3.5 text-[#F56A00]" />
+                          <span>{ticket.customerName || 'Guest'}</span>
+                        </span>
+                        <span className="flex items-center space-x-1 text-[11px]">
+                          <Clock className="w-3 h-3 text-[#F4B41A]" />
+                          <span>
+                            {ticket.Order_DateTime
+                              ? new Date(ticket.Order_DateTime).toLocaleTimeString([], {
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                })
+                              : 'Just now'}
+                          </span>
+                        </span>
                       </div>
                     </div>
 
-                    {/* Metadata */}
-                    <div className="pt-2 border-t border-[#D2D2D7]/50 text-[11px] text-[#6E6E73] flex justify-between">
-                      <span>Auth by: {ticket.Authorized_By || 'Staff'}</span>
-                      <span>
-                        {ticket.Authorized_At
-                          ? new Date(ticket.Authorized_At).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                          : ''}
+                    {/* Special Instructions Callout */}
+                    {ticket.specialInstructions && (
+                      <div className="p-3 rounded-2xl bg-[#FDF4E7] border border-[#F4B41A]/60 text-xs text-[#3B1A08] flex items-start space-x-2">
+                        <MessageSquare className="w-4 h-4 text-[#F56A00] shrink-0 mt-0.5" />
+                        <div>
+                          <span className="font-bold uppercase text-[10px] tracking-wider text-[#F56A00] block">
+                            Special Instructions
+                          </span>
+                          <p className="font-medium mt-0.5">{ticket.specialInstructions}</p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Multi-Item List with Individual Item Tracking */}
+                    <div className="space-y-2.5 flex-1">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-[#735847]">
+                        Ordered Items ({ticket.items?.length || 0}):
                       </span>
+                      <div className="space-y-2 divide-y divide-[#E6D5C3]/60">
+                        {(ticket.items || []).map((item: any) => {
+                          const itemNorm = normalizeKitchenStatus(item.Item_Status);
+                          const nextStage = nextItemStage(item.Item_Status);
+                          return (
+                            <div key={item.Order_Item_ID} className="pt-2 space-y-1">
+                              <div className="flex items-center justify-between gap-2 text-xs">
+                                <div className="flex items-center space-x-2 min-w-0">
+                                  <span className="w-6 h-6 rounded-lg bg-[#3B1A08] text-[#FFF9F0] font-bold text-[11px] flex items-center justify-center shrink-0">
+                                    {item.Quantity}×
+                                  </span>
+                                  <div className="min-w-0">
+                                    <strong className="text-[#2D1609] font-semibold block truncate">
+                                      {item.foodName}
+                                    </strong>
+                                    <span className="text-[10px] text-[#735847]">
+                                      {item.prepTimeMinutes || 15}m prep
+                                      {item.specialInstructions ? ` • Note: ${item.specialInstructions}` : ''}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                {/* Per-Item Status + Quick Advance (Multi-item support) */}
+                                <div className="flex items-center space-x-1.5 shrink-0">
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-[#FDF4E7] text-[#3B1A08] border border-[#E6D5C3]">
+                                    {itemNorm.replace(/_/g, ' ')}
+                                  </span>
+                                  {nextStage && !isServed && (ticket.items?.length || 0) > 1 && (
+                                    <button
+                                      onClick={() => handleUpdateItemStatus(item.Order_Item_ID, nextStage)}
+                                      title={`Mark item ${nextStage}`}
+                                      className="px-2 py-0.5 rounded-full bg-[#F56A00]/15 hover:bg-[#F56A00] text-[#F56A00] hover:text-white text-[10px] font-bold transition cursor-pointer"
+                                    >
+                                      → {nextStage}
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
 
-                    {/* Stage Progression Buttons with min 44px tap height */}
-                    <div className="pt-1">
-                      {isAuthorized && (
+                    {/* Whole-Order Stage Progression Actions */}
+                    <div className="pt-2 border-t border-[#E6D5C3] flex flex-col gap-2">
+                      {isNew && (
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            onClick={() => handleUpdateStatus(ticket.Order_ID, 'Accepted')}
+                            className="min-h-[44px] py-2 rounded-2xl bg-[#3B1A08] hover:bg-[#2A1104] text-white text-xs font-semibold shadow-xs flex items-center justify-center space-x-1.5 transition cursor-pointer"
+                          >
+                            <Check className="w-4 h-4 text-[#F4B41A]" />
+                            <span>Accept Order</span>
+                          </button>
+                          <button
+                            onClick={() => handleUpdateStatus(ticket.Order_ID, 'Preparing')}
+                            className="min-h-[44px] py-2 rounded-2xl bg-[#F56A00] hover:bg-[#DC5B00] text-white text-xs font-semibold shadow-xs flex items-center justify-center space-x-1.5 transition cursor-pointer"
+                          >
+                            <Flame className="w-4 h-4" />
+                            <span>Start Preparing</span>
+                          </button>
+                        </div>
+                      )}
+
+                      {isAccepted && (
                         <button
-                          onClick={() => handleUpdateStatus(ticket.Order_ID, 'In_Preparation')}
-                          className="w-full min-h-[44px] py-2.5 rounded-2xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-medium shadow-xs flex items-center justify-center space-x-2 transition"
+                          onClick={() => handleUpdateStatus(ticket.Order_ID, 'Preparing')}
+                          className="w-full min-h-[44px] py-2.5 rounded-2xl bg-[#F56A00] hover:bg-[#DC5B00] text-white text-xs font-semibold shadow-xs flex items-center justify-center space-x-2 transition cursor-pointer"
                         >
                           <Play className="w-4 h-4" />
-                          <span>Start Cooking</span>
+                          <span>Start Preparing</span>
                         </button>
                       )}
 
-                      {isCooking && (
+                      {isPreparing && (
                         <button
-                          onClick={() => handleUpdateStatus(ticket.Order_ID, 'Ready_For_Serving')}
-                          className="w-full min-h-[44px] py-2.5 rounded-2xl bg-[#248A3D] hover:bg-[#1E7433] text-white text-xs font-medium shadow-xs flex items-center justify-center space-x-2 transition"
+                          onClick={() => handleUpdateStatus(ticket.Order_ID, 'Ready')}
+                          className="w-full min-h-[44px] py-2.5 rounded-2xl bg-[#248A3D] hover:bg-[#1E7433] text-white text-xs font-semibold shadow-xs flex items-center justify-center space-x-2 transition cursor-pointer"
                         >
                           <Bell className="w-4 h-4" />
-                          <span>Mark Cooked & Ready for Server</span>
+                          <span>Mark Cooked &amp; Ready</span>
                         </button>
                       )}
 
                       {isReady && (
                         <button
                           onClick={() => handleUpdateStatus(ticket.Order_ID, 'Served')}
-                          className="w-full min-h-[44px] py-2.5 rounded-2xl bg-[#1D1D1F] hover:bg-[#333336] text-white text-xs font-medium shadow-xs flex items-center justify-center space-x-2 transition"
+                          className="w-full min-h-[44px] py-2.5 rounded-2xl bg-[#3B1A08] hover:bg-[#2A1104] text-white text-xs font-semibold shadow-xs flex items-center justify-center space-x-2 transition cursor-pointer"
                         >
-                          <CheckCircle2 className="w-4 h-4 text-[#248A3D]" />
-                          <span>Delivered to Customer Table</span>
+                          <CheckCircle2 className="w-4 h-4 text-[#F4B41A]" />
+                          <span>Mark Served to Table</span>
                         </button>
+                      )}
+
+                      {isServed && (
+                        <div className="w-full py-2 rounded-2xl bg-[#248A3D]/10 text-[#248A3D] text-xs font-bold text-center flex items-center justify-center space-x-1.5">
+                          <CheckCircle2 className="w-4 h-4" />
+                          <span>Served to Guest</span>
+                        </div>
                       )}
                     </div>
                   </div>

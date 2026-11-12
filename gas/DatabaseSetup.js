@@ -91,7 +91,7 @@ function setupAndSeedCompleteDatabase() {
   var settingsSheet = ss.getSheetByName("Restaurant_Settings");
   if (settingsSheet && settingsSheet.getLastRow() <= 1) {
     var defaultSettings = [
-      ["RESTAURANT_NAME", "Savor Dine-In Restaurant"],
+      ["RESTAURANT_NAME", "Treat & Taste"],
       ["UPI_ID", "kesikam2006@oksbi"],
       ["UPI_PAYEE_NAME", "Kesika M"],
       ["TAX_RATE_PERCENT", "5"],

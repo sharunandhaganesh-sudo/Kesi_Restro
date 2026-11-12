@@ -145,6 +145,15 @@ function handleApiRequest(request) {
       case "updateKitchenPreparationStatus":
         return createJsonResponse(handleUpdateKitchenPrepStatus(payload));
 
+      case "updateOrderItemStatus":
+        return createJsonResponse(handleUpdateOrderItemStatus(payload));
+
+      case "getCustomerFeedbacks":
+        return createJsonResponse(handleGetCustomerFeedbacks(payload));
+
+      case "getAdminFeedbackAnalytics":
+        return createJsonResponse(handleGetAdminFeedbackAnalytics(payload));
+
       // 5. Admin Operations
       case "getAdminDashboard":
         return createJsonResponse(handleGetAdminDashboard());
@@ -289,10 +298,14 @@ function handleGetPublicRestaurantInfo() {
   var tables = getSheetDataAsObjects("Tables");
   var availableCount = tables.filter(function(t) { return t.Table_Status === "Available"; }).length;
 
+  var configuredName = settingsMap.RESTAURANT_NAME;
+  var displayName = (!configuredName || configuredName.indexOf("Savor") !== -1) ? "Treat & Taste" : configuredName;
+
   return {
     success: true,
     data: {
-      name: settingsMap.RESTAURANT_NAME || "Savor Dine-In Restaurant",
+      name: displayName,
+      subtitle: "Family Restaurant",
       address: "142 Grand Heritage Boulevard, Chennai",
       phone: "+91 98765 43210",
       openingHours: (settingsMap.OPENING_TIME || "11:00 AM") + " - " + (settingsMap.CLOSING_TIME || "11:00 PM"),
@@ -382,16 +395,17 @@ function sendOtpViaCodeGsFallback_(customer) {
 
   MailApp.sendEmail({
     to: customer.Email,
-    subject: "Your SAVOR Verification Code: " + rawOtp,
-    body: "Hello " + guestName + ",\n\nYour 6-digit verification code for SAVOR Restaurant is: " + rawOtp + "\n\nThis code expires in 5 minutes.",
+    subject: "Your Treat & Taste Verification Code: " + rawOtp,
+    body: "Hello " + guestName + ",\n\nYour 6-digit verification code for Treat & Taste — Family Restaurant is: " + rawOtp + "\n\nThis code expires in 5 minutes.",
     htmlBody:
-      "<div style='font-family:sans-serif;max-width:520px;margin:0 auto;padding:24px;border:1px solid #d2d2d7;border-radius:16px;'>" +
-      "<h2 style='color:#0071E3;margin:0 0 12px;'>SAVOR Restaurant</h2>" +
-      "<p>Hello <strong>" + guestName + "</strong>,</p>" +
-      "<p>Your 6-digit verification code is:</p>" +
-      "<div style='font-size:34px;font-weight:700;letter-spacing:8px;color:#0071E3;padding:16px;background:#f5f5f7;border-radius:12px;text-align:center;'>" + rawOtp + "</div>" +
-      "<p style='color:#6e6e73;font-size:12px;margin-top:16px;'>This code expires in 5 minutes.</p></div>",
-    name: "SAVOR Restaurant Guest Services"
+      "<div style='font-family:sans-serif;max-width:520px;margin:0 auto;padding:24px;border:1px solid #E6D5C3;border-radius:16px;background:#FFF9F0;'>" +
+      "<h2 style='color:#3B1A08;margin:0 0 4px;'>Treat &amp; Taste</h2>" +
+      "<div style='color:#F56A00;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;margin-bottom:14px;'>Family Restaurant</div>" +
+      "<p style='color:#2D1609;'>Hello <strong>" + guestName + "</strong>,</p>" +
+      "<p style='color:#2D1609;'>Your 6-digit verification code is:</p>" +
+      "<div style='font-size:34px;font-weight:700;letter-spacing:8px;color:#3B1A08;padding:16px;background:#FFFFFF;border:1px solid #E6D5C3;border-radius:12px;text-align:center;'>" + rawOtp + "</div>" +
+      "<p style='color:#735847;font-size:12px;margin-top:16px;'>This code expires in 5 minutes.</p></div>",
+    name: "Treat & Taste Family Restaurant"
   });
 
   return {
@@ -645,7 +659,12 @@ function handleCreateBooking(payload) {
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(10000);
-    var bookingId = "BK-" + new Date().toISOString().slice(0, 10).replace(/-/g, "") + "-" + Math.floor(1000 + Math.random() * 9000);
+    var bookingId = payload.bookingId || ("BK-" + new Date().toISOString().slice(0, 10).replace(/-/g, "") + "-" + Math.floor(1000 + Math.random() * 9000));
+    var existing = getSheetDataAsObjects("Bookings").find(function(b) { return b.Booking_ID === bookingId; });
+    if (existing) {
+      return { success: true, data: existing, message: "Booking confirmed successfully." };
+    }
+
     var now = new Date().toISOString();
 
     var bookingRow = {
@@ -655,11 +674,11 @@ function handleCreateBooking(payload) {
       Booking_Date: now.slice(0, 10),
       Reservation_Date: payload.reservationDate || now.slice(0, 10),
       Reservation_Time: payload.reservationTime || "19:30",
-      Booking_Status: "Confirmed",
+      Booking_Status: payload.tableId ? "Seated" : "Confirmed",
       Party_Size: payload.partySize || 2,
-      Queue_Status: payload.visitType === "Walk-in" ? "Waiting" : "None",
+      Queue_Status: payload.visitType === "Walk-in" && !payload.tableId ? "Waiting" : "None",
       Queue_Joined_At: payload.visitType === "Walk-in" ? now : "",
-      Status_History_JSON: JSON.stringify([{ status: "Confirmed", at: now }])
+      Status_History_JSON: JSON.stringify([{ status: payload.tableId ? "Seated" : "Confirmed", at: now }])
     };
     appendSheetRow("Bookings", bookingRow);
 
@@ -714,48 +733,113 @@ function handleGetBookingDetails(payload) {
   };
 }
 
+function ensureFeedbackSheet_() {
+  var ss = getDatabaseConnection();
+  var sheet = ss.getSheetByName("Feedback");
+  var headers = [
+    "Feedback_ID",
+    "Order_ID",
+    "Booking_ID",
+    "Customer_ID",
+    "Customer_Name",
+    "Overall_Rating",
+    "Food_Quality_Rating",
+    "Service_Rating",
+    "Cleanliness_Rating",
+    "Comments",
+    "Submitted_At"
+  ];
+  if (!sheet) {
+    sheet = ss.insertSheet("Feedback");
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    sheet.getRange(1, 1, 1, headers.length).setFontWeight("bold").setBackground("#3B1A08").setFontColor("#FFF9F0");
+    sheet.setFrozenRows(1);
+  } else if (sheet.getLastRow() === 0) {
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
 function handlePlaceOrder(payload) {
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(10000);
-    var orderId = "ORD-" + Date.now().toString().slice(-6);
+    if (!payload || !payload.items || !payload.items.length) {
+      return { success: false, error: { code: "BAD_REQUEST", message: "Order items cannot be empty." } };
+    }
+    if (!payload.bookingId) {
+      return { success: false, error: { code: "BAD_REQUEST", message: "Booking_ID is required to place an order." } };
+    }
+
+    var orderId = payload.orderId || ("ORD-" + Date.now().toString().slice(-6));
+    var existingOrders = getSheetDataAsObjects("Orders");
+    var alreadySaved = existingOrders.find(function(o) { return o.Order_ID === orderId; });
+    if (alreadySaved) {
+      return { success: true, orderId: orderId, data: { orderId: orderId, orderStatus: alreadySaved.Order_Status }, message: "Order already confirmed." };
+    }
+
     var now = new Date().toISOString();
 
     appendSheetRow("Orders", {
       Order_ID: orderId,
       Booking_ID: payload.bookingId,
       Order_DateTime: now,
-      Order_Status: "Pending_Authorization",
-      Authorized_At: "",
-      Authorized_By: ""
+      Order_Status: "New_Order",
+      Authorized_At: now,
+      Authorized_By: "Direct Customer Order"
     });
 
     var menu = getSheetDataAsObjects("Menu");
     var menuMap = {};
     menu.forEach(function(m) { menuMap[m.Food_ID] = m; });
 
+    var itemNotes = {};
     var total = 0;
     payload.items.forEach(function(item, idx) {
       var food = menuMap[item.foodId] || {};
       var price = Number(food.Price || item.unitPrice || 0);
-      var subtotal = price * Number(item.quantity);
+      var qty = Math.max(1, Number(item.quantity) || 1);
+      var subtotal = price * qty;
       total += subtotal;
+      if (item.specialInstructions) {
+        itemNotes[item.foodId] = String(item.specialInstructions).trim();
+      }
 
       appendSheetRow("Order_Items", {
-        Order_Item_ID: "ITEM-" + orderId + "-" + (idx + 1),
+        Order_Item_ID: "ITEM-" + orderId.replace("ORD-", "") + "-" + (idx + 1),
         Order_ID: orderId,
         Food_ID: item.foodId,
-        Quantity: item.quantity,
+        Quantity: qty,
         Unit_Price: price,
         Subtotal: subtotal,
-        Item_Status: "Pending",
+        Item_Status: "New_Order",
         Cancellation_Reason: "",
         Replacement_Food_ID: "",
         Price_Difference: 0
       });
     });
 
-    return { success: true, orderId: orderId, totalAmount: total, message: "Order placed successfully." };
+    appendSheetRow("Order_Status_History", {
+      History_ID: "HIST-" + Date.now().toString().slice(-6),
+      Order_ID: orderId,
+      Order_Status: "New_Order",
+      Changed_At: now,
+      Changed_By: "Customer",
+      Change_Reason: JSON.stringify({
+        summary: "Order placed and sent directly to Kitchen",
+        specialInstructions: payload.specialInstructions ? String(payload.specialInstructions).trim() : "",
+        itemNotes: itemNotes
+      })
+    });
+
+    return {
+      success: true,
+      orderId: orderId,
+      totalAmount: total,
+      data: { orderId: orderId, totalAmount: total, orderStatus: "New_Order" },
+      message: "Order confirmed and sent directly to the Kitchen Display!"
+    };
   } finally {
     lock.releaseLock();
   }
@@ -793,26 +877,171 @@ function handleConfirmArrival(payload) {
 }
 
 function handleSubmitFeedback(payload) {
-  var now = new Date().toISOString();
-  updateSheetRowById("Bookings", "Booking_ID", payload.bookingId, {
-    Feedback_Rating: payload.rating,
-    Feedback_Comment: payload.comment || "",
-    Feedback_Submitted_At: now
-  });
-  return { success: true, message: "Thank you for your valuable feedback!" };
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+    ensureFeedbackSheet_();
+
+    var overall = Number(payload.overallRating || payload.rating);
+    var foodQuality = Number(payload.foodQualityRating || overall);
+    var service = Number(payload.serviceRating || overall);
+    var cleanliness = Number(payload.cleanlinessRating || overall);
+
+    if (
+      isNaN(overall) || overall < 1 || overall > 5 ||
+      isNaN(foodQuality) || foodQuality < 1 || foodQuality > 5 ||
+      isNaN(service) || service < 1 || service > 5 ||
+      isNaN(cleanliness) || cleanliness < 1 || cleanliness > 5
+    ) {
+      return { success: false, error: { code: "INVALID_RATING", message: "All ratings must be between 1 and 5 stars." } };
+    }
+
+    var orderId = payload.orderId ? String(payload.orderId).trim() : "";
+    var orders = getSheetDataAsObjects("Orders");
+    var order = orderId ? orders.find(function(o) { return o.Order_ID === orderId; }) : null;
+    var bookingId = payload.bookingId ? String(payload.bookingId).trim() : (order ? order.Booking_ID : "");
+
+    if (!bookingId) {
+      return { success: false, error: { code: "BAD_REQUEST", message: "Booking_ID or Order_ID is required." } };
+    }
+
+    var bookings = getSheetDataAsObjects("Bookings");
+    var booking = bookings.find(function(b) { return b.Booking_ID === bookingId; });
+    if (!booking) {
+      return { success: false, error: { code: "NOT_FOUND", message: "Booking record not found." } };
+    }
+
+    if (payload.customerId && String(booking.Customer_ID) !== String(payload.customerId)) {
+      return { success: false, error: { code: "FORBIDDEN", message: "Unauthorized: You can only submit feedback for your own completed orders." } };
+    }
+
+    var isServedOrder = order && String(order.Order_Status) === "Served";
+    var isCompletedBooking = String(booking.Booking_Status) === "Completed";
+    if (!isServedOrder && !isCompletedBooking) {
+      return { success: false, error: { code: "NOT_ELIGIBLE", message: "Feedback is available after your order is served or visit is completed." } };
+    }
+
+    var existingFeedbacks = getSheetDataAsObjects("Feedback");
+    var duplicate = existingFeedbacks.find(function(f) {
+      return orderId ? f.Order_ID === orderId : f.Booking_ID === bookingId;
+    });
+    if (duplicate) {
+      return {
+        success: false,
+        error: {
+          code: "DUPLICATE_FEEDBACK",
+          message: orderId
+            ? "Feedback has already been submitted for order " + orderId + "."
+            : "Feedback has already been submitted for this visit."
+        }
+      };
+    }
+
+    var customers = getSheetDataAsObjects("Customers");
+    var customer = customers.find(function(c) { return c.Customer_ID === booking.Customer_ID; });
+    var resolvedName = (payload.customerName && String(payload.customerName).trim()) || (customer ? customer.Customer_Name : "Valued Guest");
+    var now = new Date().toISOString();
+
+    var record = {
+      Feedback_ID: "FB-" + Date.now().toString().slice(-6) + "-" + Math.floor(100 + Math.random() * 900),
+      Order_ID: orderId,
+      Booking_ID: bookingId,
+      Customer_ID: booking.Customer_ID,
+      Customer_Name: resolvedName,
+      Overall_Rating: Math.round(overall),
+      Food_Quality_Rating: Math.round(foodQuality),
+      Service_Rating: Math.round(service),
+      Cleanliness_Rating: Math.round(cleanliness),
+      Comments: (payload.comments || payload.comment || "").toString().trim(),
+      Submitted_At: now
+    };
+
+    appendSheetRow("Feedback", record);
+
+    updateSheetRowById("Bookings", "Booking_ID", bookingId, {
+      Feedback_Rating: Math.round(overall),
+      Feedback_Comment: record.Comments,
+      Feedback_Submitted_At: now
+    });
+
+    return {
+      success: true,
+      data: record,
+      message: "Thank you! Your Treat & Taste feedback has been saved."
+    };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
-function handleGetStaffDashboard() {
+function handleGetCustomerFeedbacks(payload) {
+  ensureFeedbackSheet_();
+  var rows = getSheetDataAsObjects("Feedback").filter(function(f) {
+    return payload.customerId ? String(f.Customer_ID) === String(payload.customerId) : true;
+  });
+  return { success: true, data: rows };
+}
+
+function handleGetAdminFeedbackAnalytics(payload) {
+  ensureFeedbackSheet_();
+  var rows = getSheetDataAsObjects("Feedback").sort(function(a, b) {
+    return new Date(b.Submitted_At || 0).getTime() - new Date(a.Submitted_At || 0).getTime();
+  });
+
+  var filtered = rows.filter(function(r) {
+    if (payload && payload.date && String(r.Submitted_At || "").slice(0, 10) !== String(payload.date)) {
+      return false;
+    }
+    if (payload && payload.rating && Number(payload.rating) > 0 && Number(r.Overall_Rating) !== Number(payload.rating)) {
+      return false;
+    }
+    return true;
+  });
+
+  function calcAvg(field) {
+    if (!filtered.length) return 0;
+    var sum = filtered.reduce(function(acc, r) { return acc + Number(r[field] || 0); }, 0);
+    return Math.round((sum / filtered.length) * 10) / 10;
+  }
+
   return {
     success: true,
     data: {
-      bookings: getSheetDataAsObjects("Bookings"),
-      tables: getSheetDataAsObjects("Tables"),
-      reservations: getSheetDataAsObjects("Table_Reservations"),
-      orders: getSheetDataAsObjects("Orders"),
-      orderItems: getSheetDataAsObjects("Order_Items"),
-      bills: getSheetDataAsObjects("Bills"),
-      payments: getSheetDataAsObjects("Payments")
+      totalFeedbackCount: filtered.length,
+      averageOverallRating: calcAvg("Overall_Rating"),
+      averageFoodQualityRating: calcAvg("Food_Quality_Rating"),
+      averageServiceRating: calcAvg("Service_Rating"),
+      averageCleanlinessRating: calcAvg("Cleanliness_Rating"),
+      items: filtered
+    }
+  };
+}
+
+function handleGetStaffDashboard() {
+  var bookings = getSheetDataAsObjects("Bookings");
+  var tables = getSheetDataAsObjects("Tables");
+  var reservations = getSheetDataAsObjects("Table_Reservations");
+  var orders = getSheetDataAsObjects("Orders");
+  var orderItems = getSheetDataAsObjects("Order_Items");
+  var bills = getSheetDataAsObjects("Bills");
+  var payments = getSheetDataAsObjects("Payments");
+  var customers = getSheetDataAsObjects("Customers");
+  var menu = getSheetDataAsObjects("Menu");
+  var history = getSheetDataAsObjects("Order_Status_History");
+
+  return {
+    success: true,
+    data: {
+      bookings: bookings,
+      tables: tables,
+      reservations: reservations,
+      orders: orders,
+      orderItems: orderItems,
+      bills: bills,
+      payments: payments,
+      customers: customers,
+      menu: menu,
+      orderHistory: history
     }
   };
 }
@@ -880,29 +1109,192 @@ function handleConfirmDeparture(payload) {
   return { success: true, message: "Departure recorded and table released for cleaning." };
 }
 
+function extractOrderMetaFromHistory_(historyRows, orderId) {
+  for (var i = 0; i < historyRows.length; i++) {
+    var h = historyRows[i];
+    if (h.Order_ID === orderId && h.Change_Reason && String(h.Change_Reason).trim().indexOf("{") === 0) {
+      try {
+        var parsed = JSON.parse(h.Change_Reason);
+        return {
+          specialInstructions: parsed.specialInstructions || "",
+          itemNotes: parsed.itemNotes || {}
+        };
+      } catch (e) {}
+    }
+  }
+  return { specialInstructions: "", itemNotes: {} };
+}
+
 function handleGetKitchenQueue() {
-  var orders = getSheetDataAsObjects("Orders").filter(function(o) {
-    return o.Order_Status === "Authorized" || o.Order_Status === "Preparing" || o.Order_Status === "Ready";
+  var activeStatuses = {
+    "New_Order": true,
+    "Submitted": true,
+    "Pending_Authorization": true,
+    "Accepted": true,
+    "Preparing": true,
+    "Ready": true,
+    "Served": true,
+    "Authorized": true,
+    "In_Preparation": true,
+    "Ready_For_Serving": true
+  };
+
+  var rawOrders = getSheetDataAsObjects("Orders").filter(function(o) {
+    return Boolean(activeStatuses[o.Order_Status]);
   });
-  var items = getSheetDataAsObjects("Order_Items");
+
+  var uniqueOrdersMap = {};
+  var dedupedOrders = [];
+  rawOrders.forEach(function(o) {
+    if (!uniqueOrdersMap[o.Order_ID]) {
+      uniqueOrdersMap[o.Order_ID] = true;
+      dedupedOrders.push(o);
+    }
+  });
+
+  var allItems = getSheetDataAsObjects("Order_Items");
   var menu = getSheetDataAsObjects("Menu");
-  return { success: true, data: { orders: orders, items: items, menu: menu } };
+  var tables = getSheetDataAsObjects("Tables");
+  var reservations = getSheetDataAsObjects("Table_Reservations");
+  var bookings = getSheetDataAsObjects("Bookings");
+  var customers = getSheetDataAsObjects("Customers");
+  var historyRows = getSheetDataAsObjects("Order_Status_History");
+
+  var menuMap = {};
+  menu.forEach(function(m) { menuMap[m.Food_ID] = m; });
+
+  var tickets = dedupedOrders.map(function(order) {
+    var meta = extractOrderMetaFromHistory_(historyRows, order.Order_ID);
+    var seenItems = {};
+    var enrichedItems = allItems
+      .filter(function(i) {
+        if (i.Order_ID !== order.Order_ID || seenItems[i.Order_Item_ID]) return false;
+        seenItems[i.Order_Item_ID] = true;
+        return true;
+      })
+      .map(function(i) {
+        var food = menuMap[i.Food_ID] || {};
+        return {
+          Order_Item_ID: i.Order_Item_ID,
+          Order_ID: i.Order_ID,
+          Food_ID: i.Food_ID,
+          Quantity: Number(i.Quantity || 1),
+          Unit_Price: Number(i.Unit_Price || 0),
+          Subtotal: Number(i.Subtotal || 0),
+          Item_Status: i.Item_Status,
+          foodName: food.Food_Name || i.Food_ID,
+          prepTimeMinutes: Number(food.Prep_Time_Minutes || 15),
+          category: food.Category || "",
+          specialInstructions: meta.itemNotes[i.Food_ID] || ""
+        };
+      });
+
+    var res = reservations.find(function(r) { return r.Booking_ID === order.Booking_ID; });
+    var tbl = res ? tables.find(function(t) { return t.Table_ID === res.Table_ID; }) : null;
+    var bk = bookings.find(function(b) { return b.Booking_ID === order.Booking_ID; });
+    var cust = bk ? customers.find(function(c) { return c.Customer_ID === bk.Customer_ID; }) : null;
+
+    var normalizedStatus = order.Order_Status;
+    if (normalizedStatus === "Submitted" || normalizedStatus === "Pending_Authorization") {
+      normalizedStatus = "New_Order";
+    }
+
+    return {
+      Order_ID: order.Order_ID,
+      Booking_ID: order.Booking_ID,
+      Order_DateTime: order.Order_DateTime,
+      Order_Status: normalizedStatus,
+      Authorized_At: order.Authorized_At,
+      Authorized_By: order.Authorized_By,
+      tableNumber: tbl ? tbl.Table_Number : (res && res.Table_ID ? res.Table_ID : "Counter / Walk-in"),
+      customerName: cust ? cust.Customer_Name : "Guest",
+      specialInstructions: meta.specialInstructions,
+      items: enrichedItems
+    };
+  }).sort(function(a, b) {
+    return new Date(b.Order_DateTime || 0).getTime() - new Date(a.Order_DateTime || 0).getTime();
+  });
+
+  return { success: true, data: tickets };
 }
 
 function handleUpdateKitchenPrepStatus(payload) {
-  updateSheetRowById("Orders", "Order_ID", payload.orderId, { Order_Status: payload.newStatus });
-  appendSheetRow("Order_Status_History", {
-    History_ID: "HIST-" + Date.now().toString().slice(-6),
-    Order_ID: payload.orderId,
-    Order_Status: payload.newStatus,
-    Changed_At: new Date().toISOString(),
-    Changed_By: payload.actorName || "Kitchen",
-    Change_Reason: payload.reason || "Workflow transition"
-  });
-  return { success: true, message: "Kitchen status updated to " + payload.newStatus + "." };
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+    var newStatus = payload.newStatus;
+    updateSheetRowById("Orders", "Order_ID", payload.orderId, { Order_Status: newStatus });
+
+    var items = getSheetDataAsObjects("Order_Items");
+    items.forEach(function(item) {
+      if (item.Order_ID === payload.orderId && item.Item_Status !== "Cancelled") {
+        updateSheetRowById("Order_Items", "Order_Item_ID", item.Order_Item_ID, {
+          Item_Status: newStatus
+        });
+      }
+    });
+
+    appendSheetRow("Order_Status_History", {
+      History_ID: "HIST-" + Date.now().toString().slice(-6),
+      Order_ID: payload.orderId,
+      Order_Status: newStatus,
+      Changed_At: new Date().toISOString(),
+      Changed_By: payload.actorName || "Kitchen",
+      Change_Reason: payload.reason || "Kitchen workflow transition to " + newStatus
+    });
+    return { success: true, message: "Kitchen status updated to " + String(newStatus).replace(/_/g, " ") + "." };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function handleUpdateOrderItemStatus(payload) {
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+    var items = getSheetDataAsObjects("Order_Items");
+    var target = items.find(function(i) { return i.Order_Item_ID === payload.orderItemId; });
+    if (!target) {
+      return { success: false, error: { code: "NOT_FOUND", message: "Order item not found." } };
+    }
+
+    updateSheetRowById("Order_Items", "Order_Item_ID", payload.orderItemId, {
+      Item_Status: payload.newStatus
+    });
+
+    var siblings = getSheetDataAsObjects("Order_Items").filter(function(i) {
+      return i.Order_ID === target.Order_ID && i.Item_Status !== "Cancelled";
+    });
+    var allServed = siblings.every(function(i) { return i.Item_Status === "Served"; });
+    var allReadyOrServed = siblings.every(function(i) { return i.Item_Status === "Ready" || i.Item_Status === "Served"; });
+    var anyPreparing = siblings.some(function(i) { return i.Item_Status === "Preparing"; });
+
+    var nextOrderStatus = null;
+    if (allServed) nextOrderStatus = "Served";
+    else if (allReadyOrServed) nextOrderStatus = "Ready";
+    else if (anyPreparing) nextOrderStatus = "Preparing";
+
+    if (nextOrderStatus) {
+      updateSheetRowById("Orders", "Order_ID", target.Order_ID, { Order_Status: nextOrderStatus });
+    }
+
+    appendSheetRow("Order_Status_History", {
+      History_ID: "HIST-" + Date.now().toString().slice(-6),
+      Order_ID: target.Order_ID,
+      Order_Status: "Item:" + payload.orderItemId + "->" + payload.newStatus,
+      Changed_At: new Date().toISOString(),
+      Changed_By: payload.actorName || "Kitchen",
+      Change_Reason: "Item status updated to " + payload.newStatus
+    });
+
+    return { success: true, orderId: target.Order_ID, message: "Item updated to " + payload.newStatus + "." };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function handleGetAdminDashboard() {
+  ensureFeedbackSheet_();
   return {
     success: true,
     data: {
@@ -914,7 +1306,8 @@ function handleGetAdminDashboard() {
       bills: getSheetDataAsObjects("Bills"),
       payments: getSheetDataAsObjects("Payments"),
       users: getSheetDataAsObjects("Users"),
-      settings: getSheetDataAsObjects("Restaurant_Settings")
+      settings: getSheetDataAsObjects("Restaurant_Settings"),
+      feedback: getSheetDataAsObjects("Feedback")
     }
   };
 }

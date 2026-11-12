@@ -89,7 +89,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-[#F5F5F7] text-[#1D1D1F] flex flex-col font-sans">
+    <div className="min-h-screen bg-[#FFF9F0] text-[#2D1609] flex flex-col font-sans">
       {/* 5-Website Navigation Header */}
       <Navbar
         activeTab={activeTab}
@@ -159,41 +159,41 @@ export default function App() {
 
       {/* Schema Verification Modal */}
       {showSchemaModal && (
-        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-lg w-full p-6 space-y-4 shadow-2xl border border-[#D2D2D7]">
-            <div className="flex items-center justify-between pb-3 border-b border-[#D2D2D7]/60">
+        <div className="fixed inset-0 z-50 bg-black/45 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 space-y-4 shadow-2xl border border-[#E6D5C3]">
+            <div className="flex items-center justify-between pb-3 border-b border-[#E6D5C3]">
               <div className="flex items-center space-x-2.5">
-                <div className="w-8 h-8 rounded-full bg-[#0071E3]/10 flex items-center justify-center text-[#0071E3]">
+                <div className="w-8 h-8 rounded-full bg-[#3B1A08] flex items-center justify-center text-[#F4B41A]">
                   <Database className="w-4 h-4" />
                 </div>
-                <h3 className="font-semibold text-base text-[#1D1D1F]">
-                  Database Schema Integrity Audit
+                <h3 className="font-semibold text-base text-[#3B1A08]">
+                  Treat &amp; Taste Database Schema Audit
                 </h3>
               </div>
               <button
                 onClick={() => setShowSchemaModal(false)}
-                className="p-1 rounded-full text-[#6E6E73] hover:text-[#1D1D1F] hover:bg-[#F5F5F7] transition cursor-pointer"
+                className="p-1 rounded-full text-[#735847] hover:text-[#3B1A08] hover:bg-[#FDF4E7] transition cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <div className="space-y-3 text-xs">
-              <div className="p-4 rounded-2xl bg-[#F5F5F7] border border-[#D2D2D7]/60 space-y-2.5">
+              <div className="p-4 rounded-2xl bg-[#FDF4E7] border border-[#E6D5C3] space-y-2.5">
                 <div className="flex items-center justify-between">
-                  <span className="font-medium text-[#6E6E73]">Total Database Tabs:</span>
-                  <span className="font-semibold text-sm text-[#1D1D1F]">
-                    {schemaResult?.totalTabs ?? 12} / 12 Tabs
+                  <span className="font-medium text-[#735847]">Core + Feedback Tabs:</span>
+                  <span className="font-semibold text-sm text-[#3B1A08]">
+                    {schemaResult?.totalTabs ?? 12} Core + 1 Feedback Tab
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="font-medium text-[#6E6E73]">Total Defined Columns:</span>
+                  <span className="font-medium text-[#735847]">Core Columns + Feedback (11 Cols):</span>
                   <span className="font-semibold text-sm text-[#248A3D]">
-                    {schemaResult?.totalColumns ?? 108} / 108 Columns Match
+                    {schemaResult?.totalColumns ?? 108} Core + 11 Feedback Cols
                   </span>
                 </div>
-                <div className="flex items-center justify-between pt-1 border-t border-[#D2D2D7]/40">
-                  <span className="font-medium text-[#6E6E73]">Integrity Status:</span>
+                <div className="flex items-center justify-between pt-1 border-t border-[#E6D5C3]">
+                  <span className="font-medium text-[#735847]">Integrity Status:</span>
                   <span className="flex items-center space-x-1 font-semibold text-[#248A3D]">
                     <CheckCircle2 className="w-4 h-4 text-[#248A3D]" />
                     <span>Schema Fully Valid</span>
@@ -201,8 +201,8 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="max-h-48 overflow-y-auto space-y-2 p-3 bg-white rounded-xl border border-[#D2D2D7]/60">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-[#6E6E73] block mb-1">
+              <div className="max-h-48 overflow-y-auto space-y-2 p-3 bg-white rounded-xl border border-[#E6D5C3]">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-[#735847] block mb-1">
                   Verified Sheet Tabs:
                 </span>
                 {[
@@ -218,8 +218,9 @@ export default function App() {
                   '10. Users (8 columns)',
                   '11. Restaurant_Settings (2 columns)',
                   '12. Order_Status_History (6 columns)',
+                  '13. Feedback (11 columns — Multi-Rating Order Feedback)',
                 ].map((tabStr, i) => (
-                  <div key={i} className="flex items-center space-x-2 text-xs text-[#1D1D1F]">
+                  <div key={i} className="flex items-center space-x-2 text-xs text-[#2D1609]">
                     <CheckCircle2 className="w-3.5 h-3.5 text-[#248A3D] flex-shrink-0" />
                     <span>{tabStr}</span>
                   </div>
@@ -229,7 +230,7 @@ export default function App() {
 
             <button
               onClick={() => setShowSchemaModal(false)}
-              className="w-full py-3 rounded-full bg-[#0071E3] hover:bg-[#0077ED] text-white text-xs font-semibold shadow-xs transition cursor-pointer"
+              className="w-full py-3 rounded-full bg-[#F56A00] hover:bg-[#DC5B00] text-white text-xs font-semibold shadow-xs transition cursor-pointer"
             >
               Close Audit Report
             </button>
@@ -237,14 +238,14 @@ export default function App() {
         </div>
       )}
 
-      {/* Global Apple-Style Minimal Footer */}
-      <footer className="bg-white text-[#6E6E73] text-xs py-5 px-4 sm:px-6 border-t border-[#D2D2D7]">
+      {/* Global Treat & Taste Footer */}
+      <footer className="bg-[#3B1A08] text-[#F5DFC8] text-xs py-5 px-4 sm:px-6 border-t border-[#5B2E14]">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2.5">
-          <span className="text-[#1D1D1F] font-medium">
-            Smart Restaurant Management & Customer Queue System • Blueprint v3
+          <span className="text-[#FFF9F0] font-semibold">
+            Treat &amp; Taste — Family Restaurant • Smart Dine-In &amp; Queue System
           </span>
-          <span className="text-[#6E6E73] text-[11px]">
-            Google Apps Script (V8) Architecture • 12 Tabs / 108 Columns Google Sheets
+          <span className="text-[#F4B41A] text-[11px]">
+            Google Apps Script (V8) Backend • Live Kitchen Sync &amp; Feedback Analytics
           </span>
         </div>
       </footer>

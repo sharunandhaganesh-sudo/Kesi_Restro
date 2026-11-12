@@ -52,17 +52,18 @@ export const Navbar: React.FC<NavbarProps> = ({
   }
 
   return (
-    <header className="sticky top-0 z-50 backdrop-blur-md bg-white/85 text-[#1D1D1F] border-b border-[#D2D2D7]/80 transition-colors">
+    <header className="sticky top-0 z-50 backdrop-blur-md bg-[#3B1A08] text-[#FFF9F0] border-b border-[#5B2E14] shadow-sm transition-colors">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16">
-          {/* Apple-style Minimalist Brand Logo */}
+          {/* Treat & Taste — Family Restaurant Official Logo */}
           <SavorLogo
             size="md"
+            light={true}
             onClick={() => handleSelectTab('main')}
           />
 
-          {/* Desktop Apple-Style Segmented Control */}
-          <nav className="hidden lg:flex items-center bg-[#F5F5F7] p-1 rounded-full border border-[#D2D2D7]/60 shadow-inner">
+          {/* Desktop Navigation Pills */}
+          <nav className="hidden lg:flex items-center bg-[#2A1104]/80 p-1 rounded-full border border-[#5B2E14] shadow-inner">
             {navItems.map((item) => {
               const Icon = item.icon;
               const isActive = activeTab === item.id;
@@ -72,11 +73,11 @@ export const Navbar: React.FC<NavbarProps> = ({
                   onClick={() => handleSelectTab(item.id)}
                   className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-full text-xs transition-all duration-200 cursor-pointer ${
                     isActive
-                      ? 'bg-white text-[#1D1D1F] shadow-xs font-semibold'
-                      : 'text-[#6E6E73] hover:text-[#1D1D1F] font-medium'
+                      ? 'bg-[#F56A00] text-white shadow-xs font-semibold'
+                      : 'text-[#F5DFC8] hover:text-white font-medium'
                   }`}
                 >
-                  <Icon className={`w-3.5 h-3.5 ${isActive ? 'text-[#0071E3]' : 'text-[#6E6E73]'}`} />
+                  <Icon className={`w-3.5 h-3.5 ${isActive ? 'text-white' : 'text-[#F4B41A]'}`} />
                   <span>{item.label}</span>
                 </button>
               );
@@ -88,33 +89,33 @@ export const Navbar: React.FC<NavbarProps> = ({
             {/* Database Schema Button */}
             <button
               onClick={onVerifySchema}
-              title="Verify 12 Tabs & 108 Columns Schema"
-              className="flex items-center space-x-1 text-xs px-2.5 py-1.5 rounded-full bg-[#F5F5F7] hover:bg-[#E5E5EA] border border-[#D2D2D7] text-[#1D1D1F] transition cursor-pointer"
+              title="Verify Google Sheets Schema"
+              className="flex items-center space-x-1 text-xs px-2.5 py-1.5 rounded-full bg-[#2A1104] hover:bg-[#4A210B] border border-[#5B2E14] text-[#FFF9F0] transition cursor-pointer"
             >
-              <Database className="w-3.5 h-3.5 text-[#0071E3]" />
-              <span className="hidden sm:inline font-medium">12 Tabs / 108 Cols</span>
-              {schemaValid === true && <CheckCircle2 className="w-3.5 h-3.5 text-[#248A3D]" />}
+              <Database className="w-3.5 h-3.5 text-[#F4B41A]" />
+              <span className="hidden sm:inline font-medium">12+1 Tabs</span>
+              {schemaValid === true && <CheckCircle2 className="w-3.5 h-3.5 text-[#4ADE80]" />}
             </button>
 
             {/* User Session Pill */}
             {session ? (
-              <div className="flex items-center space-x-2 bg-[#F5F5F7] pl-3 pr-1.5 py-1 rounded-full border border-[#D2D2D7]">
-                <span className="text-xs font-semibold text-[#1D1D1F] max-w-[100px] sm:max-w-[130px] truncate">
+              <div className="flex items-center space-x-2 bg-[#2A1104] pl-3 pr-1.5 py-1 rounded-full border border-[#5B2E14]">
+                <span className="text-xs font-semibold text-[#FFF9F0] max-w-[100px] sm:max-w-[130px] truncate">
                   {session.name}
                 </span>
-                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#0071E3]/10 text-[#0071E3]">
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#F56A00] text-white">
                   {session.role}
                 </span>
                 <button
                   onClick={onLogout}
                   title="Log out"
-                  className="p-1 rounded-full hover:bg-[#D2D2D7]/60 text-[#6E6E73] hover:text-[#D70015] transition cursor-pointer"
+                  className="p-1 rounded-full hover:bg-[#5B2E14] text-[#F5DFC8] hover:text-[#F4B41A] transition cursor-pointer"
                 >
                   <LogOut className="w-3.5 h-3.5" />
                 </button>
               </div>
             ) : (
-              <span className="text-xs font-medium text-[#6E6E73] hidden sm:inline px-2 py-1">
+              <span className="text-xs font-medium text-[#F5DFC8] hidden sm:inline px-2 py-1">
                 Guest Mode
               </span>
             )}
@@ -123,18 +124,18 @@ export const Navbar: React.FC<NavbarProps> = ({
             <button
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
               aria-label="Toggle navigation"
-              className="lg:hidden p-2 rounded-xl text-[#1D1D1F] hover:bg-[#F5F5F7] border border-[#D2D2D7] transition cursor-pointer"
+              className="lg:hidden p-2 rounded-xl text-[#FFF9F0] hover:bg-[#4A210B] border border-[#5B2E14] transition cursor-pointer"
             >
               {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
             </button>
           </div>
         </div>
 
-        {/* Mobile Navigation Dropdown Menu (Apple Sheet Style) */}
+        {/* Mobile Navigation Dropdown Menu */}
         {mobileMenuOpen && (
-          <div className="lg:hidden py-3 border-t border-[#D2D2D7]/60 space-y-1 bg-white/95 backdrop-blur-md rounded-2xl p-2 mb-3 shadow-lg border">
-            <span className="text-[10px] uppercase font-bold tracking-wider text-[#6E6E73] px-3 pt-1 block">
-              Switch Website View:
+          <div className="lg:hidden py-3 border-t border-[#5B2E14] space-y-1 bg-[#2A1104] rounded-2xl p-2 mb-3 shadow-xl border">
+            <span className="text-[10px] uppercase font-bold tracking-wider text-[#F4B41A] px-3 pt-1 block">
+              Switch Portal View:
             </span>
             {navItems.map((item) => {
               const Icon = item.icon;
@@ -145,11 +146,11 @@ export const Navbar: React.FC<NavbarProps> = ({
                   onClick={() => handleSelectTab(item.id)}
                   className={`w-full flex items-center space-x-2.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition cursor-pointer ${
                     isActive
-                      ? 'bg-[#0071E3] text-white shadow-xs'
-                      : 'text-[#1D1D1F] hover:bg-[#F5F5F7]'
+                      ? 'bg-[#F56A00] text-white shadow-xs'
+                      : 'text-[#FFF9F0] hover:bg-[#3B1A08]'
                   }`}
                 >
-                  <Icon className={`w-4 h-4 ${isActive ? 'text-white' : 'text-[#6E6E73]'}`} />
+                  <Icon className={`w-4 h-4 ${isActive ? 'text-white' : 'text-[#F4B41A]'}`} />
                   <span>{item.label}</span>
                 </button>
               );

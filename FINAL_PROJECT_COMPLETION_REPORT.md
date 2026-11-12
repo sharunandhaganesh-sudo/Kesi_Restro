@@ -1,57 +1,84 @@
 # Final Project Completion & Acceptance Audit Report
 
-**Project**: Smart Restaurant Management & Customer Queue Optimization System  
-**Blueprint**: `Smart_Restaurant_Management_System_Complete_End_to_End_Blueprint_v3.pdf`  
+**Restaurant**: **Treat & Taste — Family Restaurant**  
+**System**: Smart Restaurant Management & Customer Queue System  
 **Google Spreadsheet ID**: `1fdbI2ocFwJM3-RlYqegAWMRUEE0o2y-0Lh18HTOJ7Z8`  
 **Google Apps Script Web App URL**: `https://script.google.com/macros/s/AKfycbwArKzpi76YrLlbFmV7J22kityLspwaU_OwpdleJH2UGSOk8hEMxVXsEaHC2XMcM3UOpQ/exec`
 
 ---
 
-## 1. End-to-End Acceptance Test Results (Live Google Sheets & Automated Verification)
+## 1. Summary of Implemented Updates
 
-| # | Test Scenario | Status | Evidence |
-|---|---|---|---|
-| 1 | Register a new customer & verify in `Customers` | **PASS** | Live GAS `verifyCustomerOTP` (`9000012345`) created `CUST-399278` in `Customers` |
-| 2 | Log out & log back in with same phone number | **PASS** | Second `verifyCustomerOTP` with `9000012345` returned exact same `CUST-399278` without creating duplicate |
-| 3 | Book a table & verify saved in `Bookings` / `Table_Reservations` | **PASS** | Live GAS `createBooking` created `BK-20261111-3806` (`Status: Confirmed`) and `Table_Reservations` entry for `TBL-03` |
-| 4 | Close browser without confirming arrival; re-login & verify booking remains | **PASS** | Live GAS `getCustomerHistory` retrieved `BK-20261111-3806` (`Status: Confirmed`) after session switch |
-| 5 | Select food items, close browser, re-login & verify cart restored | **PASS** | Live GAS `saveDraftCart` + `getDraftCart` restored `[{foodId: "FOOD-01", quantity: 2}]` for `TBL-03`; local Test 14 also verified |
-| 6 | Generate individual QR codes for all tables from Admin Dashboard | **PASS** | Generated 10 unique tokens (`TBLQR_TBL01_...` to `TBLQR_TBL10_...`) and PNG Data URLs (6,294–6,434 bytes each) |
-| 7 | Decode/verify each QR opens correct table-specific customer URL | **PASS** | Verified all 10 URLs (`/?scan-table=1&token=TBLQR_TBLxx_...`) resolve cleanly to `TBL-01` through `TBL-10` |
-| 8 | Scanning table QR identifies & allocates table only when available | **PASS** | `QRService.resolveTableByToken` + `App.tsx` auto-locks table; rejects disabled/unavailable tables |
-| 9 | Occupied tables cannot be double-booked | **PASS** | `TableService` & `ReservationService` enforce 105-min blocking window & lock protection (Test 6) |
-| 10 | Place food order & verify `Orders` and `Order_Items` records | **PASS** | Live GAS `placeOrder` created `ORD-417964` (`totalAmount: 560`) and `Order_Items` row in Google Sheets |
-| 11 | Kitchen status changes reflected in staff & customer dashboards | **PASS** | Live GAS `authorizeOrder` -> `getKitchenQueue: true` -> `updateKitchenPreparationStatus ("Preparing")` succeeded; Test 8 passed |
-| 12 | Generate UPI QR using configured UPI ID & exact order amount | **PASS** | Dynamic `QRCode.toDataURL` renders `upi://pay?pa=kesikam2006@oksbi&pn=Kesika%20M&am=<Grand_Total>&tr=<Bill_ID>&cu=INR` |
-| 13 | Submit payment reference & verify remains pending until verification | **PASS** | Live GAS `submitUPIPayment` created `PAY-454032` (`UTR-LIVE-E2E-998877`) in `Pending_Verification` state; Test 10 passed |
-| 14 | Verify payment & confirm customer sees Paid status | **PASS** | Live GAS `verifyPaymentReceipt` updated `PAY-454032` to `Paid` |
-| 15 | Booking cancellation, order item changes & authorized admin actions | **PASS** | Tested `OrderService.cancelOrReplaceItem`, `RefundService`, and `AdminManagementService` in Tests 8, 10, 12 |
-| 16 | Records remain after refresh and new login | **PASS** | Verified live Google Sheets persistence across independent `https` requests |
+### A. Immediate Kitchen Order Visibility & Live Staff/Customer Sync
+- **Root Cause Fixed**:
+  1. Orders previously entered `'Submitted'` / `'Pending_Authorization'` and were filtered out of Kitchen Display queues until authorized or billed.
+  2. `RequestDispatcher` for `getKitchenQueue` and `getStaffDashboard` bypassed live `GasAdapter` calls in browser mode.
+  3. Order status enums (`In_Preparation`, `Ready_For_Serving`) differed from the required operational workflow (`New_Order`, `Accepted`, `Preparing`, `Ready`, `Served`).
+- **Implemented Fix**:
+  - `OrderService.createOrder()` and `gas/Code.gs` `handlePlaceOrder()` now assign `Order_Status: 'New_Order'` and `Item_Status: 'New_Order'` immediately when a customer confirms their order, independent of bill generation.
+  - Special cooking instructions (`specialInstructions` and per-item notes) are stored persistently in `Order_Status_History` and surfaced on Kitchen & Staff cards.
+  - **Kitchen Website** (`src/frontend/views/KitchenWebsite.tsx`): Highlights `New Order` tickets prominently with golden/orange borders and pulse indicator, displays Order ID, Table number, Customer name, ordered food items with quantities, special instructions, placement time, and current status; supports filtering by status (`All Active`, `New Order`, `Accepted`, `Preparing`, `Ready`, `Served`), whole-ticket status transitions (`New_Order → Accepted → Preparing → Ready → Served`), **per-item status tracking** (`updateOrderItemStatus`) on multi-item orders, deduplicated ticket mapping by `Order_ID`, and automatic 4-second polling.
+  - **Staff Website** (`src/frontend/views/StaffWebsite.tsx`): Overhauled the `Live Orders & Kitchen Status` tab with 5-second auto-refresh showing every customer order, table number, guest name, itemized food breakdown with live item preparation badges, special instructions, and real-time Kitchen status sync.
+  - **Customer Website** (`src/frontend/views/CustomerWebsite.tsx`): Added Special Cooking Instructions input in the Cart drawer and updated the Active Orders tracker to display the 5-stage live progress stepper (`1. New → 2. Accepted → 3. Preparing → 4. Ready → 5. Served`).
+
+### B. Complete Multi-Rating Customer Feedback & Admin Feedback Management
+- **Database Schema (`Feedback` Sheet)**: Added `FEEDBACK_SHEET_DEFINITION` in `src/backend/schema.ts`, initialized `Feedback` in `src/backend/mockDb.ts`, and added `ensureFeedbackSheet_()` in `gas/Code.gs` with 11 columns (`Feedback_ID`, `Order_ID`, `Booking_ID`, `Customer_ID`, `Customer_Name`, `Overall_Rating`, `Food_Quality_Rating`, `Service_Rating`, `Cleanliness_Rating`, `Comments`, `Submitted_At`).
+- **Server-Side Security & Validation (`src/backend/services/FeedbackService.ts` & `gas/Code.gs`)**:
+  - Validates 1–5 integer bounds across all 4 rating dimensions (`Overall`, `Food Quality`, `Service`, `Cleanliness`).
+  - Verifies customer ownership (`booking.Customer_ID === customerId`) and rejects feedback from other customers.
+  - Verifies eligibility (target order must be `Served` or visit `Completed`).
+  - Blocks duplicate feedback submissions for the same `Order_ID` (and booking-level duplicates when no `Order_ID` is given).
+- **Customer Portal Feedback Form**: Appears automatically once an order is `Served` or visit is `Completed`, with Related Order ID selector, 4 separate 1–5 star rating pickers (Overall, Food Quality, Service, Cleanliness), optional Customer Name, written comments, server-saved duplicate detection (`getCustomerFeedbacks`), and verified save confirmation.
+- **Admin Dashboard — Feedback Management Tab**: Added dedicated `Feedback Management` tab showing average Restaurant Overall Rating, Food Quality, Service, and Cleanliness score cards, Date & Star Rating filters (`getAdminFeedbackAnalytics`), and complete review cards displaying Order ID, Customer Name, comments, rating breakdown, and submission timestamp.
+
+### C. Treat & Taste Branding, Official Uploaded Logo & Color Theme
+- **Central Configuration**: Created [`src/config/branding.ts`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/config/branding.ts) (`BRAND_CONFIG`) and [`src/frontend/components/BrandLogo.tsx`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/frontend/components/BrandLogo.tsx) (plus updated `SavorLogo.tsx` wrapper for backward compatibility).
+- **Official Logo Asset**: Installed uploaded Treat & Taste logo at [`public/treat-and-taste-logo.png`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/public/treat-and-taste-logo.png).
+- **Consistent Warm Palette**: Dark chocolate brown (`#3B1A08`, deep `#2A1104`), warm orange (`#F56A00`), golden yellow (`#F4B41A`), cream/ivory (`#FFF9F0`, `#FDF4E7`), white cards (`#FFFFFF`), and warm borders (`#E6D5C3`).
+- **Updated Surfaces**: `index.html` title & favicon, `src/index.css` CSS variables, `Navbar.tsx`, `App.tsx`, `MainWebsite.tsx`, `CustomerWebsite.tsx` (login, OTP modal, QR landing banner, booking, menu, cart, billing/UPI receipt), `StaffWebsite.tsx`, `KitchenWebsite.tsx`, `AdminWebsite.tsx` (including printable/downloadable `TreatAndTaste_Table_<N>_QR.png` standees & guest Wi-Fi), `gas/Code.gs`, `gas/EmailService.js`, and `gas/DatabaseSetup.js`.
 
 ---
 
-## 2. Security, RBAC & Technical Verification
+## 2. Modified & Created Files
 
-| Check | Status | Evidence |
+- **Created**:
+  - [`public/treat-and-taste-logo.png`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/public/treat-and-taste-logo.png)
+  - [`src/config/branding.ts`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/config/branding.ts)
+  - [`src/frontend/components/BrandLogo.tsx`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/frontend/components/BrandLogo.tsx)
+  - [`src/backend/services/FeedbackService.ts`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/backend/services/FeedbackService.ts)
+- **Modified (Frontend & Styling)**:
+  - [`index.html`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/index.html), [`src/index.css`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/index.css), [`src/App.tsx`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/App.tsx)
+  - [`src/frontend/components/Navbar.tsx`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/frontend/components/Navbar.tsx), [`src/frontend/components/SavorLogo.tsx`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/frontend/components/SavorLogo.tsx)
+  - [`src/frontend/views/MainWebsite.tsx`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/frontend/views/MainWebsite.tsx)
+  - [`src/frontend/views/CustomerWebsite.tsx`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/frontend/views/CustomerWebsite.tsx)
+  - [`src/frontend/views/StaffWebsite.tsx`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/frontend/views/StaffWebsite.tsx)
+  - [`src/frontend/views/KitchenWebsite.tsx`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/frontend/views/KitchenWebsite.tsx)
+  - [`src/frontend/views/AdminWebsite.tsx`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/frontend/views/AdminWebsite.tsx)
+- **Modified (Backend, Google Apps Script & Tests)**:
+  - [`src/backend/schema.ts`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/backend/schema.ts), [`src/backend/mockDb.ts`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/backend/mockDb.ts)
+  - [`src/backend/services/OrderService.ts`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/backend/services/OrderService.ts), [`src/backend/services/ReportService.ts`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/backend/services/ReportService.ts)
+  - [`src/backend/dispatcher.ts`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/backend/dispatcher.ts), [`src/backend/system.test.ts`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/backend/system.test.ts)
+  - [`gas/Code.gs`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/gas/Code.gs), [`gas/EmailService.js`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/gas/EmailService.js), [`gas/DatabaseSetup.js`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/gas/DatabaseSetup.js)
+
+---
+
+## 3. Build & Automated Verification Results
+
+| Check | Status | Details |
 |---|---|---|
-| Schema Verification (Live Google Sheet) | **PASS** | `verifyDatabaseSchema` returned `isFullyValid: true, matchedTabs: 12, matchedColumns: 108` |
-| Live Email Delivery (`testEmailDelivery`) | **PASS** | Live Apps Script `MailApp` executed (`remainingDailyQuota: 80`) |
-| Role-Based Access Control (RBAC) | **PASS** | Customer attempting `getAdminDashboard` or `updateKitchenPreparationStatus` rejected with `ACTION_FORBIDDEN` |
-| Customer Data Isolation | **PASS** | Customer A requesting Customer B's `Booking_ID` rejected with `FORBIDDEN` (`Access denied.`) |
-| TypeScript Compilation (`npm run lint`) | **PASS** | 0 errors |
-| Production Build (`npm run build`) | **PASS** | Vite built bundle (`dist/index.html`, CSS, JS) cleanly |
-| Automated Test Suite (`npm test`) | **PASS** | 15 / 15 tests passing (`system.test.ts`) |
-| Live Browser UI Inspection | **PARTIAL / MANUAL** | Dev server verified serving HTTP 200 on `http://localhost:3000/`; interactive mobile/desktop visual layout and browser console inspection recommended by user in local browser |
+| TypeScript Check (`npm run lint` / `tsc --noEmit`) | **PASS** | Exited with code 0 (0 errors) |
+| Production Build (`npm run build` / `vite build`) | **PASS** | 2,157 modules transformed; `dist/` built cleanly in 1.22s |
+| Automated System Test Suite (`npm test` / `tsx src/backend/system.test.ts`) | **PASS** | **19 / 19 tests passing** (`Tests 1–18` + `3b`), 0 failures, 0 skipped |
+| Core Schema Integrity (Test 1) | **PASS** | 12 core sheets & 108 columns intact + `Feedback` 11-column sheet validated |
+| Kitchen Immediate Order Flow (Test 16) | **PASS** | `New_Order` visible in `KitchenService.getKitchenQueue()` before any bill exists, preserves `specialInstructions`, tracks multi-item progression (`updateOrderItemStatus`) and full `New_Order → Accepted → Preparing → Ready → Served` workflow without duplicates |
+| Feedback Security & Analytics (Test 17) | **PASS** | Blocks unserved/incomplete orders, blocks unauthorized customers, persists multi-rating feedback linked to `Order_ID`, blocks duplicate submissions per `Order_ID`, and verifies Admin rating/date analytics filters |
+| Central Branding Config (Test 18) | **PASS** | Verifies `Treat & Taste`, `Family Restaurant`, and exact palette constants |
 
 ---
 
-## 3. Summary of Modified & Created Files
-- **Created**: [`gas/Config.js`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/gas/Config.js), [`src/backend/gasAdapter.ts`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/backend/gasAdapter.ts), [`src/backend/services/QRService.ts`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/backend/services/QRService.ts), [`src/backend/services/CartService.ts`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/backend/services/CartService.ts), [`.env`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/.env)
-- **Modified**: [`gas/Code.gs`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/gas/Code.gs), [`src/backend/dispatcher.ts`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/backend/dispatcher.ts), [`src/backend/services/PaymentService.ts`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/backend/services/PaymentService.ts), [`src/App.tsx`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/App.tsx), [`src/frontend/views/AdminWebsite.tsx`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/frontend/views/AdminWebsite.tsx), [`src/frontend/views/CustomerWebsite.tsx`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/frontend/views/CustomerWebsite.tsx), [`src/backend/system.test.ts`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/src/backend/system.test.ts), [`package.json`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/package.json), [`vite.config.ts`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/vite.config.ts)
+## 4. Known Limitations & Required Google Apps Script Deployment Step
 
----
-
-## 4. Remaining Optional / Manual Steps
-1. **Sync Latest `gas/Code.gs` Minor Polish**: If you want `testIntegrationRecord` to auto-delete its temporary test rows and `OPENING_TIME` / `CLOSING_TIME` to return clean `11:00 - 23:00` strings via `getDisplayValues()`, copy the latest [`gas/Code.gs`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/gas/Code.gs) into Apps Script and publish a new deployment version.
-2. **Clean Up E2E Test Rows**: You may delete the temporary verification rows (`CUST-399278`, `BK-20261111-3806`, `ORD-417964`, `BILL-440830`, `PAY-454032`, `TEST-...`) from your Google Sheet if you want a clean production slate before go-live.
-3. **Production Hosting**: Deploy the built Vite frontend (`npm run build` -> `dist/`) to Vercel, Netlify, or Firebase Hosting when ready.
+1. **Google Apps Script Manual Redeployment Required**:
+   The repository files [`gas/Code.gs`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/gas/Code.gs), [`gas/EmailService.js`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/gas/EmailService.js), and [`gas/DatabaseSetup.js`](file:///c:/Users/sharu/Downloads/smart-restaurant-management-&-customer-queue-system%20(1)/gas/DatabaseSetup.js) have been updated locally with `New_Order` immediate kitchen dispatch, `ensureFeedbackSheet_()`, `getCustomerFeedbacks`, `getAdminFeedbackAnalytics`, `updateOrderItemStatus`, and **Treat & Taste** email/settings branding. Because this workspace has no authenticated `clasp` CLI session to push directly to Google Apps Script, you must copy those updated GAS files into your Apps Script project (`script.google.com`) and click **Deploy → Manage deployments → Edit → New version → Deploy** so the live `/exec` endpoint executes the updated actions against your Google Sheet.
+2. **Interactive Live Browser UI Check**:
+   Tests verified the TypeScript types, Vite production bundle, and end-to-end backend/service logic (`system.test.ts`). Manual interactive verification in desktop and mobile browsers against your live deployed Vercel + Apps Script environment is recommended after publishing the new GAS version.

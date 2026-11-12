@@ -32,6 +32,8 @@ import { EmailService } from './services/EmailService';
 import { AdminManagementService } from './services/AdminManagementService';
 import { QRService } from './services/QRService';
 import { CartService } from './services/CartService';
+import { FeedbackService } from './services/FeedbackService';
+import { BRAND_CONFIG } from '../config/branding';
 
 test('1. Database Schema Integrity: exactly 12 tabs and 108 columns', () => {
   const headers = db.getSheetHeaders();
@@ -540,4 +542,202 @@ test('15. Cross-Device Deterministic Table QR Resolution', () => {
   const resolved = QRService.resolveTableByToken(defaultToken);
   assert.equal(resolved.success, true, 'Default QR token should resolve on a fresh device');
   assert.equal(resolved.table?.Table_ID, 'TBL-07');
+});
+
+test('16. Immediate Kitchen Order Visibility, Multi-Item Tracking & Full Lifecycle Without Billing', () => {
+  // Customer books Online reservation and places multi-item order with special instructions
+  const booking = BookingService.createBooking({
+    customerId: 'CUST-001',
+    visitType: 'Online',
+    partySize: 2,
+    reservationDate: '2026-09-12',
+    reservationTime: '19:30',
+  });
+  assert.equal(booking.success, true);
+
+  const created = OrderService.createOrder({
+    bookingId: booking.booking!.Booking_ID,
+    createdByRole: 'Customer',
+    specialInstructions: 'Less spicy, extra butter',
+    items: [
+      { foodId: 'FOOD-01', quantity: 2 },
+      { foodId: 'FOOD-04', quantity: 1 },
+    ],
+  });
+  assert.equal(created.success, true);
+  assert.equal(created.orderStatus, 'New_Order', 'Order must enter New_Order immediately');
+
+  // Verify bill is NOT yet generated, yet order immediately appears in Kitchen queue
+  const existingBill = db.findOne('Bills', (b) => b.Booking_ID === booking.booking!.Booking_ID);
+  assert.equal(existingBill, null, 'Bill must not exist yet');
+
+  const kitchenTickets = KitchenService.getKitchenQueue(false);
+  const matching = kitchenTickets.filter((t: any) => t.Order_ID === created.orderId);
+  assert.equal(matching.length, 1, 'Kitchen queue must show order immediately without duplicates');
+  assert.equal(matching[0].customerName, 'Ananya Sharma');
+  assert.equal(matching[0].specialInstructions, 'Less spicy, extra butter');
+  assert.equal(matching[0].items.length, 2);
+
+  // Per-item updates sync & order progresses New_Order -> Accepted -> Preparing -> Ready -> Served
+  assert.equal(
+    KitchenService.updatePreparationStatus({
+      orderId: created.orderId!,
+      newStatus: 'Accepted',
+      kitchenUserName: 'chef1',
+    }).success,
+    true
+  );
+
+  // Update individual item status to Preparing (rolls order up to Preparing automatically while item 2 stays Accepted)
+  const firstItemId = matching[0].items[0].Order_Item_ID;
+  const itemUpdate = KitchenService.updateOrderItemStatus({
+    orderItemId: firstItemId,
+    newStatus: 'Preparing',
+    kitchenUserName: 'chef1',
+  });
+  assert.equal(itemUpdate.success, true);
+
+  const inPrepTicket = KitchenService.getKitchenQueue(false).find(
+    (t: any) => t.Order_ID === created.orderId
+  );
+  assert.ok(inPrepTicket);
+  assert.equal(inPrepTicket.Order_Status, 'Preparing');
+  assert.equal(inPrepTicket.items[0].Item_Status, 'Preparing');
+  assert.equal(inPrepTicket.items[1].Item_Status, 'Accepted');
+
+  assert.equal(
+    KitchenService.updatePreparationStatus({
+      orderId: created.orderId!,
+      newStatus: 'Ready',
+      kitchenUserName: 'chef1',
+    }).success,
+    true
+  );
+  assert.equal(
+    KitchenService.updatePreparationStatus({
+      orderId: created.orderId!,
+      newStatus: 'Served',
+      kitchenUserName: 'chef1',
+    }).success,
+    true
+  );
+
+  const servedTicket = KitchenService.getKitchenQueue(true).find(
+    (t: any) => t.Order_ID === created.orderId
+  );
+  assert.ok(servedTicket, 'Served order must appear when includeServed=true');
+  assert.equal(servedTicket.Order_Status, 'Served');
+});
+
+test('17. Complete Multi-Rating Order Feedback Workflow, Ownership Validation & Admin Filtering', () => {
+  const bRes = BookingService.createBooking({
+    customerId: 'CUST-002',
+    visitType: 'Walk-in',
+    partySize: 2,
+  });
+  assert.equal(bRes.success, true);
+
+  const orderRes = OrderService.createOrder({
+    bookingId: bRes.booking!.Booking_ID,
+    createdByRole: 'Customer',
+    items: [{ foodId: 'FOOD-02', quantity: 1 }],
+  });
+  assert.equal(orderRes.success, true);
+
+  // Submitting before order is served must fail
+  const beforeServed = FeedbackService.submitOrderFeedback({
+    orderId: orderRes.orderId!,
+    bookingId: bRes.booking!.Booking_ID,
+    customerId: 'CUST-002',
+    overallRating: 5,
+    foodQualityRating: 5,
+    serviceRating: 4,
+    cleanlinessRating: 5,
+    comments: 'Too early!',
+  });
+  assert.equal(beforeServed.success, false, 'Cannot submit feedback before order is Served');
+
+  // Move order to Served
+  KitchenService.updatePreparationStatus({
+    orderId: orderRes.orderId!,
+    newStatus: 'Accepted',
+    kitchenUserName: 'chef1',
+  });
+  KitchenService.updatePreparationStatus({
+    orderId: orderRes.orderId!,
+    newStatus: 'Preparing',
+    kitchenUserName: 'chef1',
+  });
+  KitchenService.updatePreparationStatus({
+    orderId: orderRes.orderId!,
+    newStatus: 'Ready',
+    kitchenUserName: 'chef1',
+  });
+  KitchenService.updatePreparationStatus({
+    orderId: orderRes.orderId!,
+    newStatus: 'Served',
+    kitchenUserName: 'chef1',
+  });
+
+  // Unauthorized customer attempting to review another customer's order must be blocked
+  const unauthorized = FeedbackService.submitOrderFeedback({
+    orderId: orderRes.orderId!,
+    bookingId: bRes.booking!.Booking_ID,
+    customerId: 'CUST-001',
+    overallRating: 1,
+    foodQualityRating: 1,
+    serviceRating: 1,
+    cleanlinessRating: 1,
+    comments: 'Imposter review',
+  });
+  assert.equal(unauthorized.success, false, 'Unauthorized customer must be rejected');
+
+  // Authorized customer submits full multi-rating feedback
+  const validFb = FeedbackService.submitOrderFeedback({
+    orderId: orderRes.orderId!,
+    bookingId: bRes.booking!.Booking_ID,
+    customerId: 'CUST-002',
+    customerName: 'Vikram Patel',
+    overallRating: 5,
+    foodQualityRating: 5,
+    serviceRating: 4,
+    cleanlinessRating: 5,
+    comments: 'Wonderful family dinner and fast kitchen service!',
+  });
+  assert.equal(validFb.success, true);
+  assert.equal(validFb.feedback?.Order_ID, orderRes.orderId);
+
+  // Duplicate feedback for same order must be blocked
+  const dupFb = FeedbackService.submitOrderFeedback({
+    orderId: orderRes.orderId!,
+    bookingId: bRes.booking!.Booking_ID,
+    customerId: 'CUST-002',
+    overallRating: 3,
+    foodQualityRating: 3,
+    serviceRating: 3,
+    cleanlinessRating: 3,
+    comments: 'Duplicate attempt',
+  });
+  assert.equal(dupFb.success, false, 'Duplicate feedback for same Order_ID must fail');
+
+  // Admin analytics & rating filter check
+  const allAnalytics = FeedbackService.getAdminFeedbackAnalytics();
+  assert.ok(allAnalytics.totalFeedbackCount >= 1);
+  assert.ok(allAnalytics.averageOverallRating >= 4);
+
+  const onlyFiveStars = FeedbackService.getAdminFeedbackAnalytics({ rating: 5 });
+  assert.ok(onlyFiveStars.items.some((f: any) => f.Order_ID === orderRes.orderId));
+  const onlyOneStar = FeedbackService.getAdminFeedbackAnalytics({ rating: 1 });
+  assert.equal(
+    onlyOneStar.items.some((f: any) => f.Order_ID === orderRes.orderId),
+    false
+  );
+});
+
+test('18. Treat & Taste Central Branding Configuration', () => {
+  assert.equal(BRAND_CONFIG.name, 'Treat & Taste');
+  assert.equal(BRAND_CONFIG.subtitle, 'Family Restaurant');
+  assert.equal(BRAND_CONFIG.colors.primaryBrown, '#3B1A08');
+  assert.equal(BRAND_CONFIG.colors.warmOrange, '#F56A00');
+  assert.equal(BRAND_CONFIG.colors.goldenYellow, '#F4B41A');
 });

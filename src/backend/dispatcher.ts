@@ -20,6 +20,7 @@ import { AdminManagementService } from './services/AdminManagementService';
 import { EmailService } from './services/EmailService';
 import { QRService } from './services/QRService';
 import { CartService } from './services/CartService';
+import { FeedbackService } from './services/FeedbackService';
 import { GasAdapter } from './gasAdapter';
 import { db } from './mockDb';
 import { verifySchemaIntegrity, TOTAL_COLUMNS_COUNT } from './schema';
@@ -223,8 +224,9 @@ export class RequestDispatcher {
               reservationDate: payload.reservationDate,
               reservationTime: payload.reservationTime,
             });
-            if (res.success) {
-              GasAdapter.execute('createBooking', {
+            if (res.success && typeof window !== 'undefined') {
+              await GasAdapter.execute('createBooking', {
+                bookingId: res.booking?.Booking_ID,
                 customerId,
                 visitType: payload.visitType,
                 partySize: Number(payload.partySize),
@@ -268,18 +270,37 @@ export class RequestDispatcher {
             const res = OrderService.createOrder({
               bookingId: payload.bookingId,
               items: payload.items,
+              specialInstructions: payload.specialInstructions,
               createdByRole: 'Customer',
             });
-            if (res.success) {
-              await CartService.clearDraftCart(customerId);
-              GasAdapter.execute('placeOrder', {
+            if (!res.success) {
+              return { success: false, error: { code: 'ORDER_FAILED', message: res.message } };
+            }
+
+            if (typeof window !== 'undefined') {
+              const gasOrderRes = await GasAdapter.execute('placeOrder', {
+                orderId: res.orderId,
                 bookingId: payload.bookingId,
                 items: payload.items,
-              }).catch(() => {});
+                specialInstructions: payload.specialInstructions,
+              });
+              if (
+                !gasOrderRes.success &&
+                gasOrderRes.error?.code !== 'GAS_CONNECTION_ERROR' &&
+                gasOrderRes.error?.code !== 'UNKNOWN_ACTION'
+              ) {
+                return {
+                  success: false,
+                  error: {
+                    code: 'ORDER_PERSIST_FAILED',
+                    message: gasOrderRes.error?.message || 'Unable to save order to backend.',
+                  },
+                };
+              }
             }
-            return res.success
-              ? { success: true, data: res, message: res.message }
-              : { success: false, error: { code: 'ORDER_FAILED', message: res.message } };
+
+            await CartService.clearDraftCart(customerId);
+            return { success: true, data: res, message: res.message };
           }
 
           case 'saveDraftCart': {
@@ -298,16 +319,39 @@ export class RequestDispatcher {
           }
 
           case 'getBookingDetails': {
-            const details = BookingService.getBookingDetails(payload.bookingId);
-            if (!details || details.booking.Customer_ID !== customerId) {
+            const localDetails = BookingService.getBookingDetails(payload.bookingId);
+            if (localDetails && localDetails.booking.Customer_ID !== customerId) {
               return { success: false, error: { code: 'FORBIDDEN', message: 'Access denied.' } };
             }
-            return { success: true, data: details };
+            if (typeof window !== 'undefined') {
+              const liveDetails = await GasAdapter.execute('getBookingDetails', { bookingId: payload.bookingId });
+              if (liveDetails.success && liveDetails.data?.booking) {
+                if (liveDetails.data.booking.Customer_ID !== customerId) {
+                  return { success: false, error: { code: 'FORBIDDEN', message: 'Access denied.' } };
+                }
+                return { success: true, data: liveDetails.data };
+              }
+            }
+            if (!localDetails) {
+              return { success: false, error: { code: 'NOT_FOUND', message: 'Booking not found.' } };
+            }
+            return { success: true, data: localDetails };
           }
 
           case 'getCustomerHistory': {
             const history = BookingService.getCustomerBookings(customerId);
             return { success: true, data: history };
+          }
+
+          case 'getCustomerFeedbacks': {
+            const localFeedbacks = FeedbackService.getCustomerFeedbacks(customerId);
+            if (typeof window !== 'undefined') {
+              const liveFeedbacks = await GasAdapter.execute('getCustomerFeedbacks', { customerId });
+              if (liveFeedbacks.success && Array.isArray(liveFeedbacks.data)) {
+                return { success: true, data: liveFeedbacks.data };
+              }
+            }
+            return { success: true, data: localFeedbacks };
           }
 
           case 'submitUPIPayment': {
@@ -330,21 +374,67 @@ export class RequestDispatcher {
           }
 
           case 'submitFeedback': {
-            const res = BookingService.submitFeedback({
+            const overallRating = Number(payload.overallRating || payload.rating);
+            const foodQualityRating = Number(payload.foodQualityRating || overallRating);
+            const serviceRating = Number(payload.serviceRating || overallRating);
+            const cleanlinessRating = Number(payload.cleanlinessRating || overallRating);
+            const comments = payload.comments ?? payload.comment ?? '';
+
+            // Always persist through live Google Apps Script in browser first when reachable
+            if (typeof window !== 'undefined') {
+              const liveFbRes = await GasAdapter.execute('submitFeedback', {
+                orderId: payload.orderId,
+                bookingId: payload.bookingId,
+                customerId,
+                customerName: payload.customerName || actorName,
+                overallRating,
+                foodQualityRating,
+                serviceRating,
+                cleanlinessRating,
+                comments,
+              });
+              if (liveFbRes.success) {
+                FeedbackService.submitOrderFeedback({
+                  orderId: payload.orderId,
+                  bookingId: payload.bookingId,
+                  customerId,
+                  customerName: payload.customerName || actorName,
+                  overallRating,
+                  foodQualityRating,
+                  serviceRating,
+                  cleanlinessRating,
+                  comments,
+                });
+                return { success: true, data: liveFbRes.data, message: liveFbRes.message };
+              }
+              if (
+                liveFbRes.error?.code &&
+                liveFbRes.error.code !== 'GAS_CONNECTION_ERROR' &&
+                liveFbRes.error.code !== 'UNKNOWN_ACTION'
+              ) {
+                return {
+                  success: false,
+                  error: {
+                    code: 'FEEDBACK_FAILED',
+                    message: liveFbRes.error.message || 'Feedback submission failed.',
+                  },
+                };
+              }
+            }
+
+            const res = FeedbackService.submitOrderFeedback({
+              orderId: payload.orderId,
               bookingId: payload.bookingId,
               customerId,
-              rating: Number(payload.rating),
-              comment: payload.comment,
+              customerName: payload.customerName || actorName,
+              overallRating,
+              foodQualityRating,
+              serviceRating,
+              cleanlinessRating,
+              comments,
             });
-            if (res.success) {
-              GasAdapter.execute('submitFeedback', {
-                bookingId: payload.bookingId,
-                rating: Number(payload.rating),
-                comment: payload.comment,
-              }).catch(() => {});
-            }
             return res.success
-              ? { success: true, message: res.message }
+              ? { success: true, data: res.feedback, message: res.message }
               : { success: false, error: { code: 'FEEDBACK_FAILED', message: res.message } };
           }
         }
@@ -354,11 +444,93 @@ export class RequestDispatcher {
       if (userRole === 'Staff' || userRole === 'Admin') {
         switch (action) {
           case 'getStaffDashboard': {
+            if (typeof window !== 'undefined') {
+              const liveStaffRes = await GasAdapter.execute('getStaffDashboard');
+              if (liveStaffRes.success && liveStaffRes.data) {
+                const {
+                  bookings: liveBookings = [],
+                  tables: liveTables = [],
+                  reservations: liveRes = [],
+                  orders: liveOrders = [],
+                  orderItems: liveItems = [],
+                  customers: liveCustomers = [],
+                  menu: liveMenu = [],
+                  orderHistory: liveHistory = [],
+                  payments: livePayments = [],
+                } = liveStaffRes.data;
+
+                const enrichedBookings = liveBookings
+                  .filter((b: any) => b.Booking_Status !== 'Cancelled')
+                  .map((b: any) => {
+                    const cust = liveCustomers.find((c: any) => c.Customer_ID === b.Customer_ID);
+                    const res = liveRes.find((r: any) => r.Booking_ID === b.Booking_ID);
+                    const tbl = res ? liveTables.find((t: any) => t.Table_ID === res.Table_ID) : undefined;
+                    return {
+                      ...b,
+                      customerName: cust?.Customer_Name || 'Guest',
+                      customerMobile: cust?.Mobile_Number || '',
+                      tableNumber: tbl?.Table_Number,
+                      tableId: tbl?.Table_ID,
+                      graceDeadline: res?.Grace_Deadline,
+                      arrivalStatus: res?.Arrival_Status,
+                    };
+                  });
+
+                const enrichedOrders = liveOrders.map((order: any) => {
+                  const bk = liveBookings.find((b: any) => b.Booking_ID === order.Booking_ID);
+                  const cust = bk ? liveCustomers.find((c: any) => c.Customer_ID === bk.Customer_ID) : undefined;
+                  const res = liveRes.find((r: any) => r.Booking_ID === order.Booking_ID);
+                  const tbl = res ? liveTables.find((t: any) => t.Table_ID === res.Table_ID) : undefined;
+                  const items = liveItems
+                    .filter((i: any) => i.Order_ID === order.Order_ID)
+                    .map((i: any) => {
+                      const food = liveMenu.find((m: any) => m.Food_ID === i.Food_ID);
+                      return { ...i, foodName: food?.Food_Name || i.Food_ID };
+                    });
+                  let specialInstructions = '';
+                  const histRow = liveHistory.find(
+                    (h: any) => h.Order_ID === order.Order_ID && String(h.Change_Reason || '').trim().startsWith('{')
+                  );
+                  if (histRow) {
+                    try {
+                      specialInstructions = JSON.parse(histRow.Change_Reason).specialInstructions || '';
+                    } catch {}
+                  }
+                  return {
+                    ...order,
+                    customerName: cust?.Customer_Name || 'Guest',
+                    tableNumber: tbl?.Table_Number || (res?.Table_ID || 'Walk-in'),
+                    specialInstructions,
+                    items,
+                  };
+                });
+
+                const queue = enrichedBookings.filter((b: any) => b.Queue_Status === 'Waiting' || b.Queue_Status === 'Called');
+                const pendingPayments = livePayments.filter((p: any) => p.Payment_Status === 'Pending_Verification');
+                const unverifiedArrivals = enrichedBookings.filter(
+                  (b: any) => b.Booking_Status === 'Arrived' && b.arrivalStatus !== 'Verified'
+                );
+
+                return {
+                  success: true,
+                  data: {
+                    bookings: enrichedBookings,
+                    queue,
+                    tables: liveTables,
+                    pendingPayments,
+                    allOrders: enrichedOrders,
+                    unverifiedArrivals,
+                  },
+                };
+              }
+            }
+
             const bookings = BookingService.getStaffDashboardBookings();
             const queue = QueueService.getActiveQueue();
             const tables = TableService.getAllTablesWithDynamicStatus();
             const pendingPayments = PaymentService.getPendingPayments();
-            const allOrders = db.getRows('Orders');
+            const enrichedLocalOrders = KitchenService.getKitchenQueue(true);
+            const allOrders = enrichedLocalOrders.length > 0 ? enrichedLocalOrders : db.getRows('Orders');
             const unverifiedArrivals = bookings.filter(
               (b) => b.Booking_Status === 'Arrived' && b.arrivalStatus !== 'Verified'
             );
@@ -508,28 +680,99 @@ export class RequestDispatcher {
       if (userRole === 'Kitchen' || userRole === 'Admin') {
         switch (action) {
           case 'getKitchenQueue': {
-            const queue = KitchenService.getKitchenQueue();
+            if (typeof window !== 'undefined') {
+              const liveKitchenRes = await GasAdapter.execute('getKitchenQueue');
+              if (liveKitchenRes.success && Array.isArray(liveKitchenRes.data)) {
+                return { success: true, data: liveKitchenRes.data };
+              }
+              if (
+                !liveKitchenRes.success &&
+                liveKitchenRes.error?.code !== 'GAS_CONNECTION_ERROR' &&
+                liveKitchenRes.error?.code !== 'UNKNOWN_ACTION'
+              ) {
+                return {
+                  success: false,
+                  error: liveKitchenRes.error || { code: 'KITCHEN_FETCH_FAILED', message: 'Failed to load kitchen queue.' },
+                };
+              }
+            }
+            const queue = KitchenService.getKitchenQueue(true);
             return { success: true, data: queue };
           }
 
           case 'updateKitchenPreparationStatus': {
+            if (typeof window !== 'undefined') {
+              const liveUpd = await GasAdapter.execute('updateKitchenPreparationStatus', {
+                orderId: payload.orderId,
+                newStatus: payload.newStatus,
+                actorName,
+                reason: payload.reason,
+              });
+              // Keep local mockDb synchronized if order is cached locally
+              KitchenService.updatePreparationStatus({
+                orderId: payload.orderId,
+                newStatus: payload.newStatus,
+                kitchenUserName: actorName,
+                reason: payload.reason,
+              });
+              if (liveUpd.success) {
+                return { success: true, message: liveUpd.message || 'Status updated.' };
+              }
+              if (
+                liveUpd.error?.code !== 'GAS_CONNECTION_ERROR' &&
+                liveUpd.error?.code !== 'UNKNOWN_ACTION'
+              ) {
+                return {
+                  success: false,
+                  error: liveUpd.error || { code: 'KITCHEN_UPDATE_FAILED', message: 'Failed to update kitchen status.' },
+                };
+              }
+            }
+
             const res = KitchenService.updatePreparationStatus({
               orderId: payload.orderId,
               newStatus: payload.newStatus,
               kitchenUserName: actorName,
               reason: payload.reason,
             });
-            if (res.success) {
-              GasAdapter.execute('updateKitchenPreparationStatus', {
-                orderId: payload.orderId,
-                newStatus: payload.newStatus,
-                actorName,
-                reason: payload.reason,
-              }).catch(() => {});
-            }
             return res.success
               ? { success: true, message: res.message }
               : { success: false, error: { code: 'KITCHEN_UPDATE_FAILED', message: res.message } };
+          }
+
+          case 'updateOrderItemStatus': {
+            if (typeof window !== 'undefined') {
+              const liveItemRes = await GasAdapter.execute('updateOrderItemStatus', {
+                orderItemId: payload.orderItemId,
+                newStatus: payload.newStatus,
+                actorName,
+              });
+              KitchenService.updateOrderItemStatus({
+                orderItemId: payload.orderItemId,
+                newStatus: payload.newStatus,
+                kitchenUserName: actorName,
+              });
+              if (liveItemRes.success) {
+                return { success: true, message: liveItemRes.message };
+              }
+              if (
+                liveItemRes.error?.code !== 'GAS_CONNECTION_ERROR' &&
+                liveItemRes.error?.code !== 'UNKNOWN_ACTION'
+              ) {
+                return {
+                  success: false,
+                  error: liveItemRes.error || { code: 'ITEM_UPDATE_FAILED', message: 'Failed to update item status.' },
+                };
+              }
+            }
+            const res = KitchenService.updateOrderItemStatus({
+              orderItemId: payload.orderItemId,
+              newStatus: payload.newStatus,
+              kitchenUserName: actorName,
+            });
+            return res.success
+              ? { success: true, message: res.message }
+              : { success: false, error: { code: 'ITEM_UPDATE_FAILED', message: res.message } };
           }
         }
       }
@@ -544,18 +787,48 @@ export class RequestDispatcher {
             const menu = db.getRows('Menu');
             const tables = TableService.getAllTablesWithDynamicStatus();
             const settings = AdminManagementService.getSettings();
+            let feedbackAnalytics = FeedbackService.getAdminFeedbackAnalytics();
+
+            if (typeof window !== 'undefined') {
+              const liveFb = await GasAdapter.execute('getAdminFeedbackAnalytics', {});
+              if (liveFb.success && liveFb.data) {
+                feedbackAnalytics = liveFb.data;
+              }
+            }
 
             return {
               success: true,
               data: {
-                metrics,
+                metrics: {
+                  ...metrics,
+                  averageRating: feedbackAnalytics.averageOverallRating || metrics.averageRating,
+                  totalFeedbackCount: feedbackAnalytics.totalFeedbackCount || metrics.totalFeedbackCount,
+                },
                 users,
                 refunds,
                 menu,
                 tables,
                 settings,
+                feedbackAnalytics,
               },
             };
+          }
+
+          case 'getAdminFeedbackAnalytics': {
+            if (typeof window !== 'undefined') {
+              const liveFb = await GasAdapter.execute('getAdminFeedbackAnalytics', {
+                date: payload.date,
+                rating: payload.rating,
+              });
+              if (liveFb.success && liveFb.data) {
+                return { success: true, data: liveFb.data };
+              }
+            }
+            const analytics = FeedbackService.getAdminFeedbackAnalytics({
+              date: payload.date,
+              rating: payload.rating ? Number(payload.rating) : undefined,
+            });
+            return { success: true, data: analytics };
           }
 
           case 'createUserAccount': {
@@ -714,7 +987,8 @@ export class RequestDispatcher {
     return {
       success: true,
       data: {
-        name: settings.RESTAURANT_NAME || 'Savor Dine-In Restaurant',
+        name: settings.RESTAURANT_NAME && !settings.RESTAURANT_NAME.includes('Savor') ? settings.RESTAURANT_NAME : 'Treat & Taste',
+        subtitle: 'Family Restaurant',
         address: '142 Grand Heritage Boulevard, Chennai',
         phone: '+91 98765 43210',
         openingHours: `${settings.OPENING_TIME || '11:00 AM'} - ${settings.CLOSING_TIME || '11:00 PM'}`,
