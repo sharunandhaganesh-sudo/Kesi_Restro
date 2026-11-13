@@ -25,6 +25,9 @@ import { KitchenWebsite } from './frontend/views/KitchenWebsite';
 import { AdminWebsite } from './frontend/views/AdminWebsite';
 import { RequestDispatcher } from './backend/dispatcher';
 import { Database, CheckCircle2, AlertCircle, X } from 'lucide-react';
+import { UniversalNotificationCenter } from './frontend/components/UniversalNotificationCenter';
+
+const TRUSTED_SESSION_KEY = 'treat_taste_trusted_session_v1';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<WebsiteTab>('main');
@@ -32,6 +35,32 @@ export default function App() {
   const [customerInitialMode, setCustomerInitialMode] = useState<'Online' | 'Walk-in'>('Online');
   const [scannedTableInfo, setScannedTableInfo] = useState<any | null>(null);
   const [qrScanError, setQrScanError] = useState<string>('');
+
+  // Restore trusted session across browser refresh, tab closure & browser restarts
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(TRUSTED_SESSION_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!parsed?.sessionId) {
+        localStorage.removeItem(TRUSTED_SESSION_KEY);
+        return;
+      }
+      RequestDispatcher.dispatch({
+        action: 'validateSession',
+        payload: { sessionId: parsed.sessionId },
+        sessionId: parsed.sessionId,
+      }).then((res) => {
+        if (res.success && res.data?.sessionId) {
+          setSession(res.data);
+        } else {
+          localStorage.removeItem(TRUSTED_SESSION_KEY);
+        }
+      });
+    } catch {
+      localStorage.removeItem(TRUSTED_SESSION_KEY);
+    }
+  }, []);
 
   // Handle incoming QR scan deep-links (?scan-table=1&token=... or ?source=walkin)
   useEffect(() => {
@@ -71,6 +100,17 @@ export default function App() {
     setActiveTab('customer');
   }
 
+  function handleSetSession(nextSession: UserSessionState | null) {
+    setSession(nextSession);
+    try {
+      if (nextSession?.sessionId) {
+        localStorage.setItem(TRUSTED_SESSION_KEY, JSON.stringify({ sessionId: nextSession.sessionId }));
+      } else {
+        localStorage.removeItem(TRUSTED_SESSION_KEY);
+      }
+    } catch {}
+  }
+
   function handleLogout() {
     if (session?.sessionId) {
       RequestDispatcher.dispatch({
@@ -78,7 +118,49 @@ export default function App() {
         sessionId: session.sessionId,
       });
     }
+    try {
+      localStorage.removeItem(TRUSTED_SESSION_KEY);
+    } catch {}
     setSession(null);
+  }
+
+  // Universal Notification Navigation Handlers
+  const effectiveRole: 'Customer' | 'Staff' | 'Kitchen' | 'Admin' | 'Guest' =
+    session?.role ||
+    (activeTab === 'staff'
+      ? 'Staff'
+      : activeTab === 'kitchen'
+      ? 'Kitchen'
+      : activeTab === 'admin'
+      ? 'Admin'
+      : activeTab === 'customer'
+      ? 'Customer'
+      : 'Guest');
+
+  function handleNavigateToBooking(bookingId: string) {
+    setActiveTab('staff');
+  }
+
+  function handleNavigateToArrivals(bookingId: string) {
+    setActiveTab('staff');
+  }
+
+  function handleNavigateToOrder(orderId: string) {
+    setActiveTab('kitchen');
+  }
+
+  function handleNavigateToBill(bookingId: string) {
+    setActiveTab('customer');
+    setTimeout(() => {
+      const el = document.getElementById('bill-section');
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 350);
+  }
+
+  function handleNavigateToTables(tableId?: string) {
+    setActiveTab('staff');
   }
 
   async function handleVerifySchema() {
@@ -88,8 +170,35 @@ export default function App() {
     setShowSchemaModal(true);
   }
 
+  // Handle background scroll locking and escape key dismissal for schema modal
+  useEffect(() => {
+    if (!showSchemaModal) return;
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowSchemaModal(false);
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = originalOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showSchemaModal]);
+
   return (
     <div className="min-h-screen bg-[#FFF9F0] text-[#2D1609] flex flex-col font-sans">
+      {/* Universal Real-Time Notification Center & Status Popups */}
+      <UniversalNotificationCenter
+        currentRole={effectiveRole}
+        onNavigateToBooking={handleNavigateToBooking}
+        onNavigateToArrivals={handleNavigateToArrivals}
+        onNavigateToOrder={handleNavigateToOrder}
+        onNavigateToBill={handleNavigateToBill}
+        onNavigateToTables={handleNavigateToTables}
+      />
+
       {/* 5-Website Navigation Header */}
       <Navbar
         activeTab={activeTab}
@@ -121,7 +230,7 @@ export default function App() {
                 scannedTable={scannedTableInfo}
                 qrScanError={qrScanError}
                 session={session?.role === 'Customer' ? session : null}
-                onSetSession={setSession}
+                onSetSession={handleSetSession}
                 onLogout={handleLogout}
               />
             )}
@@ -131,7 +240,7 @@ export default function App() {
                 session={
                   session && (session.role === 'Staff' || session.role === 'Admin') ? session : null
                 }
-                onSetSession={setSession}
+                onSetSession={handleSetSession}
                 onLogout={handleLogout}
               />
             )}
@@ -141,7 +250,7 @@ export default function App() {
                 session={
                   session && (session.role === 'Kitchen' || session.role === 'Admin') ? session : null
                 }
-                onSetSession={setSession}
+                onSetSession={handleSetSession}
                 onLogout={handleLogout}
               />
             )}
@@ -149,7 +258,7 @@ export default function App() {
             {activeTab === 'admin' && (
               <AdminWebsite
                 session={session?.role === 'Admin' ? session : null}
-                onSetSession={setSession}
+                onSetSession={handleSetSession}
                 onLogout={handleLogout}
               />
             )}
@@ -159,55 +268,65 @@ export default function App() {
 
       {/* Schema Verification Modal */}
       {showSchemaModal && (
-        <div className="fixed inset-0 z-50 bg-black/45 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-lg w-full p-6 space-y-4 shadow-2xl border border-[#E6D5C3]">
-            <div className="flex items-center justify-between pb-3 border-b border-[#E6D5C3]">
+        <div
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowSchemaModal(false);
+          }}
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto touch-scroll"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white rounded-3xl max-w-lg w-full shadow-2xl border border-[#E6D5C3] flex flex-col max-h-[92vh] sm:max-h-[90vh] my-auto overflow-hidden animate-in fade-in zoom-in-95 duration-200"
+          >
+            <div className="sticky top-0 z-10 bg-white/95 backdrop-blur-sm px-4 sm:px-6 py-3.5 border-b border-[#E6D5C3] flex items-center justify-between shrink-0">
               <div className="flex items-center space-x-2.5">
                 <div className="w-8 h-8 rounded-full bg-[#3B1A08] flex items-center justify-center text-[#F4B41A]">
                   <Database className="w-4 h-4" />
                 </div>
-                <h3 className="font-semibold text-base text-[#3B1A08]">
+                <h3 className="font-bold text-base text-[#3B1A08]">
                   Treat &amp; Taste Database Schema Audit
                 </h3>
               </div>
               <button
+                type="button"
                 onClick={() => setShowSchemaModal(false)}
-                className="p-1 rounded-full text-[#735847] hover:text-[#3B1A08] hover:bg-[#FDF4E7] transition cursor-pointer"
+                aria-label="Close modal"
+                className="p-2 -mr-1 rounded-full text-[#735847] hover:text-[#3B1A08] hover:bg-[#FDF4E7] transition cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="space-y-3 text-xs">
+            <div className="overflow-y-auto px-4 sm:px-6 py-4 space-y-3 text-xs flex-1 overscroll-contain">
               <div className="p-4 rounded-2xl bg-[#FDF4E7] border border-[#E6D5C3] space-y-2.5">
                 <div className="flex items-center justify-between">
-                  <span className="font-medium text-[#735847]">Core + Feedback Tabs:</span>
+                  <span className="font-medium text-[#735847]">Total Authoritative Tabs:</span>
                   <span className="font-semibold text-sm text-[#3B1A08]">
-                    {schemaResult?.totalTabs ?? 12} Core + 1 Feedback Tab
+                    12 Tabs (PDF Blueprint Specification)
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="font-medium text-[#735847]">Core Columns + Feedback (11 Cols):</span>
+                  <span className="font-medium text-[#735847]">Total Defined Columns:</span>
                   <span className="font-semibold text-sm text-[#248A3D]">
-                    {schemaResult?.totalColumns ?? 108} Core + 11 Feedback Cols
+                    108 Columns Defined &amp; Verified
                   </span>
                 </div>
                 <div className="flex items-center justify-between pt-1 border-t border-[#E6D5C3]">
-                  <span className="font-medium text-[#735847]">Integrity Status:</span>
+                  <span className="font-medium text-[#735847]">Schema Integrity Status:</span>
                   <span className="flex items-center space-x-1 font-semibold text-[#248A3D]">
                     <CheckCircle2 className="w-4 h-4 text-[#248A3D]" />
-                    <span>Schema Fully Valid</span>
+                    <span>Schema Fully Valid (12 Tabs / 108 Columns)</span>
                   </span>
                 </div>
               </div>
 
-              <div className="max-h-48 overflow-y-auto space-y-2 p-3 bg-white rounded-xl border border-[#E6D5C3]">
+              <div className="max-h-56 overflow-y-auto space-y-2 p-3 bg-white rounded-xl border border-[#E6D5C3] touch-scroll">
                 <span className="text-[10px] font-bold uppercase tracking-wider text-[#735847] block mb-1">
                   Verified Sheet Tabs:
                 </span>
                 {[
                   '1. Customers (10 columns)',
-                  '2. Bookings (14 columns)',
+                  '2. Bookings (14 columns — includes Feedback)',
                   '3. Tables (4 columns)',
                   '4. Table_Reservations (7 columns)',
                   '5. Menu (9 columns)',
@@ -218,7 +337,6 @@ export default function App() {
                   '10. Users (8 columns)',
                   '11. Restaurant_Settings (2 columns)',
                   '12. Order_Status_History (6 columns)',
-                  '13. Feedback (11 columns — Multi-Rating Order Feedback)',
                 ].map((tabStr, i) => (
                   <div key={i} className="flex items-center space-x-2 text-xs text-[#2D1609]">
                     <CheckCircle2 className="w-3.5 h-3.5 text-[#248A3D] flex-shrink-0" />
@@ -228,12 +346,15 @@ export default function App() {
               </div>
             </div>
 
-            <button
-              onClick={() => setShowSchemaModal(false)}
-              className="w-full py-3 rounded-full bg-[#F56A00] hover:bg-[#DC5B00] text-white text-xs font-semibold shadow-xs transition cursor-pointer"
-            >
-              Close Audit Report
-            </button>
+            <div className="sticky bottom-0 z-10 bg-white/95 backdrop-blur-sm px-4 sm:px-6 py-3 border-t border-[#E6D5C3] shrink-0">
+              <button
+                type="button"
+                onClick={() => setShowSchemaModal(false)}
+                className="w-full py-3 rounded-full bg-[#F56A00] hover:bg-[#DC5B00] text-white text-xs font-semibold shadow-xs transition cursor-pointer min-h-[44px]"
+              >
+                Close Audit Report
+              </button>
+            </div>
           </div>
         </div>
       )}

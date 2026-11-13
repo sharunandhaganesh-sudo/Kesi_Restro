@@ -62,19 +62,13 @@ export class ReportService {
     const occupiedTablesCount = tables.filter((t) => t.Table_Status === 'Occupied').length;
     const tableUtilizationPercent = totalTables > 0 ? Math.round((occupiedTablesCount / totalTables) * 100) : 0;
 
-    // 4. Feedback & Ratings (prefer dedicated Feedback sheet, fallback to Bookings summary)
-    const feedbackSheetRows = db.getRows('Feedback');
-    const bookingFeedbackRows = bookings.filter((b) => b.Feedback_Rating && Number(b.Feedback_Rating) > 0);
-    const totalFeedbackCount = feedbackSheetRows.length > 0 ? feedbackSheetRows.length : bookingFeedbackRows.length;
+    // 4. Feedback & Ratings calculated strictly from Bookings sheet
+    const bookingFeedbackRows = bookings.filter((b) => b.Feedback_Submitted_At && Number(b.Feedback_Rating) > 0);
+    const totalFeedbackCount = bookingFeedbackRows.length;
     const averageRating =
-      feedbackSheetRows.length > 0
+      bookingFeedbackRows.length > 0
         ? Math.round(
-            (feedbackSheetRows.reduce((sum, f) => sum + Number(f.Overall_Rating || 0), 0) / feedbackSheetRows.length) *
-              10
-          ) / 10
-        : bookingFeedbackRows.length > 0
-        ? Math.round(
-            (bookingFeedbackRows.reduce((sum, b) => sum + Number(b.Feedback_Rating), 0) /
+            (bookingFeedbackRows.reduce((sum, b) => sum + Number(b.Feedback_Rating || 0), 0) /
               bookingFeedbackRows.length) *
               10
           ) / 10

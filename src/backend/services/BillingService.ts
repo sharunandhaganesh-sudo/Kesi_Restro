@@ -40,10 +40,16 @@ export class BillingService {
         return { success: false, message: 'Booking not found.' };
       }
 
-      // 2. Fetch all orders for this booking
-      const orders = db.findRows('Orders', (o) => o.Booking_ID === params.bookingId);
+      // 2. Fetch all accepted/authorized orders for this booking (unauthorized orders excluded)
+      const orders = db.findRows(
+        'Orders',
+        (o) => o.Booking_ID === params.bookingId && o.Order_Status !== 'Submitted' && o.Order_Status !== 'Cancelled'
+      );
       if (orders.length === 0) {
-        return { success: false, message: 'Cannot generate bill: No orders found for this visit.' };
+        return {
+          success: false,
+          message: 'Cannot generate bill: No authorized food orders found for this visit. Ensure orders are authorized first.',
+        };
       }
 
       // 3. Aggregate all non-cancelled order items
@@ -59,12 +65,27 @@ export class BillingService {
 
       const subtotal = allItems.reduce((sum, item) => sum + Number(item.Subtotal), 0);
 
-      // 4. Calculate Tax (5% GST standard restaurant rate)
+      // 4. Calculate Tax: Requires approved owner configuration in Restaurant_Settings
       const taxRateSetting = db.findOne(
         'Restaurant_Settings',
         (s) => s.Setting_Key === 'TAX_RATE_PERCENT'
       );
-      const taxRate = Number(taxRateSetting?.Setting_Value || 5) / 100;
+
+      if (!taxRateSetting || taxRateSetting.Setting_Value === '' || taxRateSetting.Setting_Value === null) {
+        return {
+          success: false,
+          message:
+            'Bill calculation blocked: Tax rate is not configured. Tax rate must be confirmed by restaurant owner in Restaurant_Settings (TAX_RATE_PERCENT) before bill finalization.',
+        };
+      }
+
+      const taxRate = Number(taxRateSetting.Setting_Value) / 100;
+      if (isNaN(taxRate) || taxRate < 0) {
+        return {
+          success: false,
+          message: 'Bill calculation blocked: Invalid TAX_RATE_PERCENT value in Restaurant_Settings.',
+        };
+      }
       const taxAmount = Math.round(subtotal * taxRate * 100) / 100;
 
       // 5. Calculate Discount

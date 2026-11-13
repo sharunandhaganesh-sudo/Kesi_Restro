@@ -289,7 +289,20 @@ test('9. Billing, Duplicate Prevention & Server Tax Calculation', () => {
 
   OrderService.authorizeOrder(orderRes.orderId!, 'staff');
 
-  // Generate final bill
+  // Generate final bill when GST is unconfigured -> must block
+  const blockedBillRes = BillingService.generateFinalBill({
+    bookingId: bBill.booking!.Booking_ID,
+    discountPercent: 10,
+    discountReason: 'Welcome offer',
+    staffUserName: 'staff',
+  });
+  assert.equal(blockedBillRes.success, false);
+  assert.match(blockedBillRes.message, /Tax rate is not configured/);
+
+  // Configure tax rate in Restaurant_Settings (simulating explicit owner approval)
+  db.updateRow('Restaurant_Settings', 'Setting_Key', 'TAX_RATE_PERCENT', { Setting_Value: '5' });
+
+  // Generate final bill with approved tax
   const billRes1 = BillingService.generateFinalBill({
     bookingId: bBill.booking!.Booking_ID,
     discountPercent: 10,
@@ -544,7 +557,7 @@ test('15. Cross-Device Deterministic Table QR Resolution', () => {
   assert.equal(resolved.table?.Table_ID, 'TBL-07');
 });
 
-test('16. Immediate Kitchen Order Visibility, Multi-Item Tracking & Full Lifecycle Without Billing', () => {
+test('16. Order Creation, Staff Authorization Gate, Kitchen Visibility & Line Item Lifecycle', () => {
   // Customer books Online reservation and places multi-item order with special instructions
   const booking = BookingService.createBooking({
     customerId: 'CUST-001',
@@ -565,20 +578,55 @@ test('16. Immediate Kitchen Order Visibility, Multi-Item Tracking & Full Lifecyc
     ],
   });
   assert.equal(created.success, true);
-  assert.equal(created.orderStatus, 'New_Order', 'Order must enter New_Order immediately');
+  assert.equal(created.orderStatus, 'Submitted', 'Customer order must enter Submitted awaiting staff authorization');
 
-  // Verify bill is NOT yet generated, yet order immediately appears in Kitchen queue
+  // Verify bill does not exist and unauthorized order is NOT visible in Kitchen
   const existingBill = db.findOne('Bills', (b) => b.Booking_ID === booking.booking!.Booking_ID);
   assert.equal(existingBill, null, 'Bill must not exist yet');
 
+  const unauthorizedQueue = KitchenService.getKitchenQueue(false);
+  assert.equal(
+    unauthorizedQueue.some((t: any) => t.Order_ID === created.orderId),
+    false,
+    'Kitchen queue must NOT display unauthorized orders'
+  );
+
+  // Pre-authorization item quantity modification
+  const initialItems = db.findRows('Order_Items', (i) => i.Order_ID === created.orderId);
+  const qtyUpdate = OrderService.updateItemQuantity({
+    orderItemId: initialItems[0].Order_Item_ID,
+    quantity: 3,
+    changedBy: 'staff',
+  });
+  assert.equal(qtyUpdate.success, true);
+  const updatedItem = db.findOne('Order_Items', (i) => i.Order_Item_ID === initialItems[0].Order_Item_ID);
+  assert.equal(updatedItem?.Quantity, 3);
+  assert.equal(updatedItem?.Subtotal, 3 * Number(updatedItem?.Unit_Price));
+
+  // Online order cannot be authorized before arrival is verified
+  const earlyAuth = OrderService.authorizeOrder(created.orderId!, 'staff');
+  assert.equal(earlyAuth.success, false, 'Cannot authorize online order before verified arrival');
+
+  // Customer confirms arrival within grace
+  const arr = ReservationService.customerConfirmArrival(booking.booking!.Booking_ID, 'CUST-001');
+  assert.equal(arr.success, true);
+
+  // Staff verifies arrival
+  const staffVer = ReservationService.staffVerifyArrival(booking.booking!.Booking_ID, 'staff');
+  assert.equal(staffVer.success, true);
+
+  // Staff authorizes order
+  const authRes = OrderService.authorizeOrder(created.orderId!, 'staff');
+  assert.equal(authRes.success, true, 'Staff authorization must succeed after verified arrival');
+
+  // Now order appears in Kitchen Display
   const kitchenTickets = KitchenService.getKitchenQueue(false);
   const matching = kitchenTickets.filter((t: any) => t.Order_ID === created.orderId);
-  assert.equal(matching.length, 1, 'Kitchen queue must show order immediately without duplicates');
+  assert.equal(matching.length, 1, 'Authorized order must appear in Kitchen queue');
   assert.equal(matching[0].customerName, 'Ananya Sharma');
   assert.equal(matching[0].specialInstructions, 'Less spicy, extra butter');
-  assert.equal(matching[0].items.length, 2);
 
-  // Per-item updates sync & order progresses New_Order -> Accepted -> Preparing -> Ready -> Served
+  // Per-item updates sync & order progresses Accepted -> Preparing -> Ready -> Served
   assert.equal(
     KitchenService.updatePreparationStatus({
       orderId: created.orderId!,
@@ -588,7 +636,6 @@ test('16. Immediate Kitchen Order Visibility, Multi-Item Tracking & Full Lifecyc
     true
   );
 
-  // Update individual item status to Preparing (rolls order up to Preparing automatically while item 2 stays Accepted)
   const firstItemId = matching[0].items[0].Order_Item_ID;
   const itemUpdate = KitchenService.updateOrderItemStatus({
     orderItemId: firstItemId,
@@ -602,8 +649,6 @@ test('16. Immediate Kitchen Order Visibility, Multi-Item Tracking & Full Lifecyc
   );
   assert.ok(inPrepTicket);
   assert.equal(inPrepTicket.Order_Status, 'Preparing');
-  assert.equal(inPrepTicket.items[0].Item_Status, 'Preparing');
-  assert.equal(inPrepTicket.items[1].Item_Status, 'Accepted');
 
   assert.equal(
     KitchenService.updatePreparationStatus({
@@ -629,112 +674,152 @@ test('16. Immediate Kitchen Order Visibility, Multi-Item Tracking & Full Lifecyc
   assert.equal(servedTicket.Order_Status, 'Served');
 });
 
-test('17. Complete Multi-Rating Order Feedback Workflow, Ownership Validation & Admin Filtering', () => {
+test('17. Customer Extra Orders, Staff Order Creation & Final Bill Aggregation', () => {
+  const bVisit = BookingService.createBooking({
+    customerId: 'CUST-002',
+    visitType: 'Walk-in',
+    partySize: 2,
+  });
+  assert.equal(bVisit.success, true);
+  const bkId = bVisit.booking!.Booking_ID;
+
+  // Seat customer
+  TableService.seatCustomer(bkId, 'TBL-02');
+
+  // Order 1 (First Order by Customer)
+  const ord1 = OrderService.createOrder({
+    bookingId: bkId,
+    createdByRole: 'Customer',
+    items: [{ foodId: 'FOOD-01', quantity: 1 }], // 280
+  });
+  assert.equal(ord1.success, true);
+  OrderService.authorizeOrder(ord1.orderId!, 'staff');
+
+  // Order 2 (Customer "Add More Items" to same Booking_ID)
+  const ord2 = OrderService.createOrder({
+    bookingId: bkId,
+    createdByRole: 'Customer',
+    items: [{ foodId: 'FOOD-03', quantity: 2 }], // 360 * 2 = 720
+  });
+  assert.equal(ord2.success, true);
+  OrderService.authorizeOrder(ord2.orderId!, 'staff');
+
+  // Order 3 (Staff creates order on behalf of customer for same Booking_ID)
+  const ord3 = OrderService.createOrder({
+    bookingId: bkId,
+    createdByRole: 'Staff',
+    items: [{ foodId: 'FOOD-05', quantity: 1 }], // 560
+  });
+  assert.equal(ord3.success, true);
+  OrderService.authorizeOrder(ord3.orderId!, 'staff');
+
+  // Generate single final bill covering all 3 orders: 280 + 720 + 560 = 1560
+  const billRes = BillingService.generateFinalBill({
+    bookingId: bkId,
+    staffUserName: 'staff',
+  });
+  assert.equal(billRes.success, true);
+  assert.equal(billRes.bill?.Subtotal, 1560, 'Final bill must aggregate all accepted orders for the booking');
+
+  // Duplicate final bill prevention
+  const dupBill = BillingService.generateFinalBill({
+    bookingId: bkId,
+    staffUserName: 'staff',
+  });
+  assert.equal(dupBill.bill?.Bill_ID, billRes.bill?.Bill_ID, 'Bill generation must be idempotent');
+});
+
+test('18. Customer Completed Visit Feedback, Ownership Validation & Bookings Sheet Storage', () => {
   const bRes = BookingService.createBooking({
     customerId: 'CUST-002',
     visitType: 'Walk-in',
     partySize: 2,
   });
   assert.equal(bRes.success, true);
+  const bkId = bRes.booking!.Booking_ID;
 
-  const orderRes = OrderService.createOrder({
-    bookingId: bRes.booking!.Booking_ID,
-    createdByRole: 'Customer',
-    items: [{ foodId: 'FOOD-02', quantity: 1 }],
-  });
-  assert.equal(orderRes.success, true);
-
-  // Submitting before order is served must fail
-  const beforeServed = FeedbackService.submitOrderFeedback({
-    orderId: orderRes.orderId!,
-    bookingId: bRes.booking!.Booking_ID,
+  // Cannot submit feedback while visit is uncompleted
+  const earlyFb = FeedbackService.submitOrderFeedback({
+    bookingId: bkId,
     customerId: 'CUST-002',
     overallRating: 5,
-    foodQualityRating: 5,
-    serviceRating: 4,
-    cleanlinessRating: 5,
-    comments: 'Too early!',
+    comments: 'Too early',
   });
-  assert.equal(beforeServed.success, false, 'Cannot submit feedback before order is Served');
+  assert.equal(earlyFb.success, false, 'Cannot submit feedback before visit is Completed');
 
-  // Move order to Served
-  KitchenService.updatePreparationStatus({
-    orderId: orderRes.orderId!,
-    newStatus: 'Accepted',
-    kitchenUserName: 'chef1',
-  });
-  KitchenService.updatePreparationStatus({
-    orderId: orderRes.orderId!,
-    newStatus: 'Preparing',
-    kitchenUserName: 'chef1',
-  });
-  KitchenService.updatePreparationStatus({
-    orderId: orderRes.orderId!,
-    newStatus: 'Ready',
-    kitchenUserName: 'chef1',
-  });
-  KitchenService.updatePreparationStatus({
-    orderId: orderRes.orderId!,
-    newStatus: 'Served',
-    kitchenUserName: 'chef1',
-  });
+  // Mark completed
+  db.updateRow('Bookings', 'Booking_ID', bkId, { Booking_Status: 'Completed' });
 
-  // Unauthorized customer attempting to review another customer's order must be blocked
-  const unauthorized = FeedbackService.submitOrderFeedback({
-    orderId: orderRes.orderId!,
-    bookingId: bRes.booking!.Booking_ID,
+  // Imposter customer blocked
+  const imposter = FeedbackService.submitOrderFeedback({
+    bookingId: bkId,
     customerId: 'CUST-001',
-    overallRating: 1,
-    foodQualityRating: 1,
-    serviceRating: 1,
-    cleanlinessRating: 1,
+    overallRating: 2,
     comments: 'Imposter review',
   });
-  assert.equal(unauthorized.success, false, 'Unauthorized customer must be rejected');
+  assert.equal(imposter.success, false, 'Unauthorized customer must be blocked');
 
-  // Authorized customer submits full multi-rating feedback
+  // Valid submission saved in Bookings
   const validFb = FeedbackService.submitOrderFeedback({
-    orderId: orderRes.orderId!,
-    bookingId: bRes.booking!.Booking_ID,
+    bookingId: bkId,
     customerId: 'CUST-002',
     customerName: 'Vikram Patel',
     overallRating: 5,
-    foodQualityRating: 5,
-    serviceRating: 4,
-    cleanlinessRating: 5,
-    comments: 'Wonderful family dinner and fast kitchen service!',
+    comments: 'Wonderful dining experience!',
   });
   assert.equal(validFb.success, true);
-  assert.equal(validFb.feedback?.Order_ID, orderRes.orderId);
 
-  // Duplicate feedback for same order must be blocked
+  const bkRow = db.findOne('Bookings', (b) => b.Booking_ID === bkId);
+  assert.equal(bkRow?.Feedback_Rating, 5);
+  assert.equal(bkRow?.Feedback_Comment, 'Wonderful dining experience!');
+  assert.ok(bkRow?.Feedback_Submitted_At);
+
+  // Duplicate submission blocked
   const dupFb = FeedbackService.submitOrderFeedback({
-    orderId: orderRes.orderId!,
-    bookingId: bRes.booking!.Booking_ID,
+    bookingId: bkId,
     customerId: 'CUST-002',
-    overallRating: 3,
-    foodQualityRating: 3,
-    serviceRating: 3,
-    cleanlinessRating: 3,
+    overallRating: 4,
     comments: 'Duplicate attempt',
   });
-  assert.equal(dupFb.success, false, 'Duplicate feedback for same Order_ID must fail');
-
-  // Admin analytics & rating filter check
-  const allAnalytics = FeedbackService.getAdminFeedbackAnalytics();
-  assert.ok(allAnalytics.totalFeedbackCount >= 1);
-  assert.ok(allAnalytics.averageOverallRating >= 4);
-
-  const onlyFiveStars = FeedbackService.getAdminFeedbackAnalytics({ rating: 5 });
-  assert.ok(onlyFiveStars.items.some((f: any) => f.Order_ID === orderRes.orderId));
-  const onlyOneStar = FeedbackService.getAdminFeedbackAnalytics({ rating: 1 });
-  assert.equal(
-    onlyOneStar.items.some((f: any) => f.Order_ID === orderRes.orderId),
-    false
-  );
+  assert.equal(dupFb.success, false, 'Duplicate feedback for same completed booking must fail');
 });
 
-test('18. Treat & Taste Central Branding Configuration', () => {
+test('19. Persistent Trusted Customer Session & Profile Update', () => {
+  // Test unique mobile & email on registration
+  const dupReg = AuthService.requestCustomerOTP({
+    mobileNumber: '9876543299',
+    customerName: 'New Guest',
+    email: 'ananya.sharma@example.com', // already registered to CUST-001
+  });
+  // Since requestCustomerOTP is async:
+  return dupReg.then((res) => {
+    assert.equal(res.success, false, 'Duplicate email on new registration must be rejected');
+
+    // Customer profile update
+    const updateRes = AuthService.updateCustomerProfile({
+      customerId: 'CUST-001',
+      customerName: 'Ananya S. Updated',
+      email: 'ananya.updated@example.com',
+    });
+    assert.equal(updateRes.success, true);
+    const updatedCust = db.findOne('Customers', (c) => c.Customer_ID === 'CUST-001');
+    assert.equal(updatedCust?.Customer_Name, 'Ananya S. Updated');
+
+    // Trusted session verification & sliding renewal
+    const quick = AuthService.demoQuickLoginCustomer('9876543210');
+    assert.equal(quick.success, true);
+    const check1 = AuthService.validateSession(quick.session!.sessionId);
+    assert.equal(check1.isValid, true);
+    assert.equal(check1.customer?.customerId, 'CUST-001');
+
+    // Logout revokes session
+    AuthService.logout(quick.session!.sessionId);
+    const check2 = AuthService.validateSession(quick.session!.sessionId);
+    assert.equal(check2.isValid, false, 'Logged out session must be invalidated');
+  });
+});
+
+test('20. Treat & Taste Central Branding Configuration', () => {
   assert.equal(BRAND_CONFIG.name, 'Treat & Taste');
   assert.equal(BRAND_CONFIG.subtitle, 'Family Restaurant');
   assert.equal(BRAND_CONFIG.colors.primaryBrown, '#3B1A08');

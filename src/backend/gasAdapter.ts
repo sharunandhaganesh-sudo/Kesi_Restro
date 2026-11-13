@@ -34,46 +34,58 @@ export class GasAdapter {
     payload: Record<string, any> = {},
     sessionId?: string
   ): Promise<GasResponse<T>> {
-    try {
-      const url = new URL(this.endpoint);
-      url.searchParams.append('action', action);
-      if (sessionId) {
-        url.searchParams.append('sessionId', sessionId);
-      }
-
-      const response = await fetch(url.toString(), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'text/plain;charset=utf-8', // Apps Script standard CORS text payload
-        },
-        body: JSON.stringify({
-          action,
-          payload,
-          sessionId,
-        }),
-      });
-
-      if (!response.ok) {
-        return {
-          success: false,
-          error: {
-            code: `HTTP_${response.status}`,
-            message: `Google Apps Script returned HTTP status ${response.status}.`,
-          },
-        };
-      }
-
-      const json = await response.json();
-      return json;
-    } catch (err: any) {
-      return {
-        success: false,
-        error: {
-          code: 'GAS_CONNECTION_ERROR',
-          message: err.message || 'Unable to connect to Google Apps Script Web App.',
-        },
-      };
+    const url = new URL(this.endpoint);
+    url.searchParams.append('action', action);
+    if (sessionId) {
+      url.searchParams.append('sessionId', sessionId);
     }
+
+    const bodyPayload = JSON.stringify({
+      action,
+      payload,
+      sessionId,
+    });
+
+    const maxAttempts = 3;
+    let lastError: any = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const response = await fetch(url.toString(), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'text/plain;charset=utf-8', // Apps Script standard CORS text payload
+          },
+          body: bodyPayload,
+        });
+
+        if (!response.ok) {
+          return {
+            success: false,
+            error: {
+              code: `HTTP_${response.status}`,
+              message: `Google Apps Script returned HTTP status ${response.status}.`,
+            },
+          };
+        }
+
+        const json = await response.json();
+        return json;
+      } catch (err: any) {
+        lastError = err;
+        if (attempt < maxAttempts) {
+          await new Promise((r) => setTimeout(r, attempt * 500));
+        }
+      }
+    }
+
+    return {
+      success: false,
+      error: {
+        code: 'GAS_CONNECTION_ERROR',
+        message: lastError?.message || 'Unable to connect to Google Apps Script Web App.',
+      },
+    };
   }
 
   /**

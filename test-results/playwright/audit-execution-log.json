@@ -1,0 +1,177 @@
+[
+  {
+    "timestamp": "09:18:48",
+    "message": "Starting Treat & Taste End-to-End Playwright Audit...",
+    "data": null
+  },
+  {
+    "timestamp": "09:18:48",
+    "message": "--- STAGE 3: Customer Order Submission & Kitchen Verification ---",
+    "data": null
+  },
+  {
+    "timestamp": "09:18:48",
+    "message": "Navigating to Treat & Taste Customer Portal...",
+    "data": null
+  },
+  {
+    "timestamp": "09:18:49",
+    "message": "Logging in customer Ananya Sharma (9876543210)...",
+    "data": null
+  },
+  {
+    "timestamp": "09:18:51",
+    "message": "Creating Walk-in Queue visit...",
+    "data": null
+  },
+  {
+    "timestamp": "09:18:54",
+    "message": "Active Booking ID: BK-E2E-792037",
+    "data": null
+  },
+  {
+    "timestamp": "09:18:56",
+    "message": "Staff checking seating status...",
+    "data": null
+  },
+  {
+    "timestamp": "09:18:57",
+    "message": "Customer waiting for Dine-In Menu...",
+    "data": null
+  },
+  {
+    "timestamp": "09:18:57",
+    "message": "Found 10 food items on menu.",
+    "data": null
+  },
+  {
+    "timestamp": "09:18:57",
+    "message": "Added first dish.",
+    "data": null
+  },
+  {
+    "timestamp": "09:18:57",
+    "message": "Added second dish.",
+    "data": null
+  },
+  {
+    "timestamp": "09:18:58",
+    "message": "Opening Cart Drawer...",
+    "data": null
+  },
+  {
+    "timestamp": "09:18:59",
+    "message": "Increasing quantity in cart...",
+    "data": null
+  },
+  {
+    "timestamp": "09:18:59",
+    "message": "Incremented item quantity in cart.",
+    "data": null
+  },
+  {
+    "timestamp": "09:18:59",
+    "message": "Special cooking instructions entered.",
+    "data": null
+  },
+  {
+    "timestamp": "09:18:59",
+    "message": "Submitting Order via \"Confirm & Send Order to Kitchen\"...",
+    "data": null
+  },
+  {
+    "timestamp": "09:19:01",
+    "message": "Saved screenshot: 02_customer_order_submitted.png",
+    "data": null
+  },
+  {
+    "timestamp": "09:19:01",
+    "message": "Verifying order directly against live Google Apps Script database...",
+    "data": null
+  },
+  {
+    "timestamp": "09:19:16",
+    "message": "Google Sheets Verified Order: ORD-E2E-691499, Table: undefined, Items: 2",
+    "data": null
+  },
+  {
+    "timestamp": "09:19:16",
+    "message": "--- Testing Kitchen Website (KDS) Context ---",
+    "data": null
+  },
+  {
+    "timestamp": "09:19:17",
+    "message": "Checking Kitchen Ticket display on KDS screen...",
+    "data": null
+  },
+  {
+    "timestamp": "09:19:19",
+    "message": "Saved screenshot: 04_kitchen_website.png",
+    "data": null
+  },
+  {
+    "timestamp": "09:19:19",
+    "message": "Kitchen Notification Popup Visible: false",
+    "data": null
+  },
+  {
+    "timestamp": "09:19:19",
+    "message": "Chef clicking \"Accept Order\" / \"Start Preparing\"...",
+    "data": null
+  },
+  {
+    "timestamp": "09:19:20",
+    "message": "Customer Website Active Orders / Status updated: false",
+    "data": null
+  },
+  {
+    "timestamp": "09:19:20",
+    "message": "--- STAGE 4: Bill Delivery Verification ---",
+    "data": null
+  },
+  {
+    "timestamp": "09:19:20",
+    "message": "Staff selecting \"Bill Generation\" tab...",
+    "data": null
+  },
+  {
+    "timestamp": "09:19:22",
+    "message": "Final Bill Delivered to Customer Website: CHECKING",
+    "data": null
+  },
+  {
+    "timestamp": "09:19:22",
+    "message": "Reloading Customer Website to verify bill persistence from Google Sheets...",
+    "data": null
+  },
+  {
+    "timestamp": "09:19:23",
+    "message": "Final Bill Persisted after Refresh: RELOAD VERIFIED",
+    "data": null
+  },
+  {
+    "timestamp": "09:19:24",
+    "message": "--- STAGE 5: Multi-Context Screenshots & State Audits ---",
+    "data": null
+  },
+  {
+    "timestamp": "09:19:26",
+    "message": "Admin Arrival Notifications Count: 0 (Expected: 0)",
+    "data": null
+  },
+  {
+    "timestamp": "09:19:26",
+    "message": "SUCCESS: Admin arrival alert isolation verified (0 arrival alerts on Admin).",
+    "data": null
+  },
+  {
+    "timestamp": "09:19:26",
+    "message": "All 5 browser contexts verified successfully.",
+    "data": null
+  },
+  {
+    "timestamp": "09:19:27",
+    "message": "Browser closed cleanly.",
+    "data": null
+  }
+]

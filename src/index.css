@@ -85,3 +85,32 @@
   min-height: 44px;
   min-width: 44px;
 }
+
+/* Horizontal scrollable containers for tabs, pills, and wide data tables */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.touch-scroll {
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: smooth;
+  overscroll-behavior-x: contain;
+}
+
+/* Responsive modal scroll safety */
+.modal-scrollable-body {
+  max-height: calc(90vh - 130px);
+  max-height: calc(90dvh - 130px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+@supports (padding: env(safe-area-inset-bottom)) {
+  .safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}

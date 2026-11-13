@@ -10,7 +10,16 @@
 import CryptoJS from 'crypto-js';
 
 // Default OTP secret for local/mock development (Script Properties will hold production value)
-export const DEFAULT_OTP_HMAC_SECRET = 'savor_restaurant_32byte_secure_secret_key_2026';
+export const DEFAULT_OTP_HMAC_SECRET = 'treat_taste_family_restaurant_32byte_secret_key_2026';
+
+/**
+ * Computes a SHA-256 hash of a session token for secure server-side storage.
+ * Prevents plain session tokens from being exposed in persistent sheets/databases.
+ */
+export function hashSessionToken(token: string): string {
+  if (!token) return '';
+  return CryptoJS.SHA256(token.trim()).toString(CryptoJS.enc.Hex);
+}
 
 /**
  * Generates a random 6-digit OTP string between 100000 and 999999

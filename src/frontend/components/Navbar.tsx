@@ -51,6 +51,15 @@ export const Navbar: React.FC<NavbarProps> = ({
     setMobileMenuOpen(false);
   }
 
+  React.useEffect(() => {
+    if (!mobileMenuOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMobileMenuOpen(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [mobileMenuOpen]);
+
   return (
     <header className="sticky top-0 z-50 backdrop-blur-md bg-[#3B1A08] text-[#FFF9F0] border-b border-[#5B2E14] shadow-sm transition-colors">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -85,25 +94,25 @@ export const Navbar: React.FC<NavbarProps> = ({
           </nav>
 
           {/* Right Session & Schema Actions */}
-          <div className="flex items-center space-x-2.5">
-            {/* Database Schema Button */}
+          <div className="flex items-center space-x-1.5 sm:space-x-2.5 shrink-0">
+            {/* Database Schema Button: visible on desktop or inside mobile dropdown */}
             <button
               onClick={onVerifySchema}
               title="Verify Google Sheets Schema"
-              className="flex items-center space-x-1 text-xs px-2.5 py-1.5 rounded-full bg-[#2A1104] hover:bg-[#4A210B] border border-[#5B2E14] text-[#FFF9F0] transition cursor-pointer"
+              className="hidden md:flex items-center space-x-1 text-xs px-2.5 py-1.5 rounded-full bg-[#2A1104] hover:bg-[#4A210B] border border-[#5B2E14] text-[#FFF9F0] transition cursor-pointer"
             >
               <Database className="w-3.5 h-3.5 text-[#F4B41A]" />
-              <span className="hidden sm:inline font-medium">12+1 Tabs</span>
+              <span className="font-medium">12 Tabs</span>
               {schemaValid === true && <CheckCircle2 className="w-3.5 h-3.5 text-[#4ADE80]" />}
             </button>
 
             {/* User Session Pill */}
             {session ? (
-              <div className="flex items-center space-x-2 bg-[#2A1104] pl-3 pr-1.5 py-1 rounded-full border border-[#5B2E14]">
-                <span className="text-xs font-semibold text-[#FFF9F0] max-w-[100px] sm:max-w-[130px] truncate">
+              <div className="flex items-center space-x-1.5 bg-[#2A1104] pl-2.5 pr-1 py-1 rounded-full border border-[#5B2E14] max-w-[130px] sm:max-w-[200px]">
+                <span className="text-[11px] sm:text-xs font-semibold text-[#FFF9F0] truncate">
                   {session.name}
                 </span>
-                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#F56A00] text-white">
+                <span className="text-[9px] sm:text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-[#F56A00] text-white shrink-0">
                   {session.role}
                 </span>
                 <button
@@ -114,17 +123,13 @@ export const Navbar: React.FC<NavbarProps> = ({
                   <LogOut className="w-3.5 h-3.5" />
                 </button>
               </div>
-            ) : (
-              <span className="text-xs font-medium text-[#F5DFC8] hidden sm:inline px-2 py-1">
-                Guest Mode
-              </span>
-            )}
+            ) : null}
 
             {/* Mobile Menu Hamburger Toggle */}
             <button
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
               aria-label="Toggle navigation"
-              className="lg:hidden p-2 rounded-xl text-[#FFF9F0] hover:bg-[#4A210B] border border-[#5B2E14] transition cursor-pointer"
+              className="lg:hidden p-2 rounded-xl text-[#FFF9F0] hover:bg-[#4A210B] border border-[#5B2E14] transition cursor-pointer touch-manipulation min-h-[40px] min-w-[40px] flex items-center justify-center"
             >
               {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
             </button>
@@ -155,6 +160,22 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </button>
               );
             })}
+
+            <div className="pt-2 mt-2 border-t border-[#5B2E14]/80 px-1">
+              <button
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  onVerifySchema();
+                }}
+                className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-[#3B1A08] text-xs font-semibold text-[#FFF9F0] border border-[#5B2E14] hover:bg-[#4A210B] transition cursor-pointer"
+              >
+                <div className="flex items-center space-x-2">
+                  <Database className="w-4 h-4 text-[#F4B41A]" />
+                  <span>Database Schema Audit (12 Tabs / 108 Cols)</span>
+                </div>
+                {schemaValid === true && <CheckCircle2 className="w-4 h-4 text-[#4ADE80]" />}
+              </button>
+            </div>
           </div>
         )}
       </div>

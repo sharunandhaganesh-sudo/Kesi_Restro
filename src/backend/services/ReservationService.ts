@@ -61,52 +61,94 @@ export class ReservationService {
 
   /**
    * Customer presses "I'm Arrived" button at the restaurant.
-   * Validates within 10-minute grace window.
+   * Validates ownership, lock, and 10-minute grace window.
    */
-  public static customerConfirmArrival(bookingId: string): { success: boolean; message: string } {
-    const booking = db.findOne('Bookings', (b) => b.Booking_ID === bookingId);
-    if (!booking) {
-      return { success: false, message: 'Booking not found.' };
+  public static customerConfirmArrival(
+    bookingId: string,
+    customerId?: string
+  ): { success: boolean; message: string } {
+    const lockKey = `arrival_${bookingId}`;
+    if (!db.acquireLock(lockKey)) {
+      return { success: false, message: 'Arrival update already in progress. Please try again.' };
     }
 
-    const reservation = db.findOne(
-      'Table_Reservations',
-      (r) => r.Booking_ID === bookingId && r.Reservation_Status === 'Active'
-    );
+    try {
+      const booking = db.findOne('Bookings', (b) => b.Booking_ID === bookingId);
+      if (!booking) {
+        return { success: false, message: 'Booking not found.' };
+      }
 
-    const now = Date.now();
+      if (customerId && booking.Customer_ID !== customerId) {
+        return { success: false, message: 'Unauthorized: You can only confirm arrival for your own booking.' };
+      }
 
-    if (reservation) {
-      const graceDeadlineMs = new Date(reservation.Grace_Deadline).getTime();
-      if (now > graceDeadlineMs) {
-        // Expired no-show
-        db.updateRow('Table_Reservations', 'Reservation_ID', reservation.Reservation_ID, {
-          Reservation_Status: 'Expired',
-          Arrival_Status: 'No_Show',
-        });
-        db.updateRow('Bookings', 'Booking_ID', bookingId, {
-          Booking_Status: 'No_Show',
-        });
+      if (['Completed', 'Cancelled', 'No_Show'].includes(booking.Booking_Status)) {
         return {
           success: false,
-          message: 'The 10-minute grace period has expired. Your reservation was released.',
+          message: `Cannot confirm arrival for a booking with status '${booking.Booking_Status}'.`,
         };
       }
 
-      // Record digital arrival
-      db.updateRow('Table_Reservations', 'Reservation_ID', reservation.Reservation_ID, {
-        Arrival_Status: 'Arrived',
+      const reservation = db.findOne(
+        'Table_Reservations',
+        (r) => r.Booking_ID === bookingId && r.Reservation_Status === 'Active'
+      );
+
+      const now = Date.now();
+      let history: any[] = [];
+      try {
+        history = JSON.parse(booking.Status_History_JSON || '[]');
+      } catch {
+        history = [];
+      }
+
+      if (reservation) {
+        const graceDeadlineMs = new Date(reservation.Grace_Deadline).getTime();
+        if (Number.isFinite(graceDeadlineMs) && now > graceDeadlineMs) {
+          // Expired no-show; physical table status is never altered if occupied
+          db.updateRow('Table_Reservations', 'Reservation_ID', reservation.Reservation_ID, {
+            Reservation_Status: 'Expired',
+            Arrival_Status: 'No_Show',
+          });
+          history.push({
+            status: 'No_Show',
+            changedAt: new Date(now).toISOString(),
+            reason: '10-minute arrival grace period expired',
+          });
+          db.updateRow('Bookings', 'Booking_ID', bookingId, {
+            Booking_Status: 'No_Show',
+            Status_History_JSON: JSON.stringify(history),
+          });
+          return {
+            success: false,
+            message: 'The 10-minute grace period has expired. Your reservation was released as No-Show.',
+          };
+        }
+
+        // Record digital arrival
+        db.updateRow('Table_Reservations', 'Reservation_ID', reservation.Reservation_ID, {
+          Arrival_Status: 'Arrived',
+        });
+      }
+
+      history.push({
+        status: 'Arrived',
+        changedAt: new Date(now).toISOString(),
+        reason: 'Customer confirmed digital arrival',
       });
+
+      db.updateRow('Bookings', 'Booking_ID', bookingId, {
+        Booking_Status: 'Arrived',
+        Status_History_JSON: JSON.stringify(history),
+      });
+
+      return {
+        success: true,
+        message: 'Arrival confirmed! Please wait while host staff verifies your arrival (15-min window).',
+      };
+    } finally {
+      db.releaseLock(lockKey);
     }
-
-    db.updateRow('Bookings', 'Booking_ID', bookingId, {
-      Booking_Status: 'Arrived',
-    });
-
-    return {
-      success: true,
-      message: 'Arrival confirmed! Please wait while host staff prepares your table (15-min verification window).',
-    };
   }
 
   /**

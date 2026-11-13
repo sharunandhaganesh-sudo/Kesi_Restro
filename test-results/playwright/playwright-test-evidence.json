@@ -1,0 +1,33 @@
+{
+  "stage3CustomerOrder": null,
+  "stage3GoogleSheetsVerification": {
+    "orderId": "ORD-E2E-691499",
+    "itemsCount": 2,
+    "status": "Served"
+  },
+  "stage3KitchenVerification": null,
+  "stage3StatusSync": {
+    "customerPortalUpdated": false
+  },
+  "stage4BillGeneration": null,
+  "stage4BillDelivery": {
+    "deliveredToCustomer": false,
+    "persistedAfterReload": false
+  },
+  "stage5Websites": {
+    "main": "Verified & Captured",
+    "customer": "Verified & Captured",
+    "staff": "Verified & Captured",
+    "kitchen": "Verified & Captured",
+    "admin": "Verified & Captured"
+  },
+  "consoleErrors": [],
+  "failedRequests": [
+    "[Customer Request Failed] https://script.google.com/macros/s/AKfycbwArKzpi76YrLlbFmV7J22kityLspwaU_OwpdleJH2UGSOk8hEMxVXsEaHC2XMcM3UOpQ/exec?action=getBookingDetails - net::ERR_ABORTED",
+    "[Customer Request Failed] https://script.google.com/macros/s/AKfycbwArKzpi76YrLlbFmV7J22kityLspwaU_OwpdleJH2UGSOk8hEMxVXsEaHC2XMcM3UOpQ/exec?action=getCustomerFeedbacks - net::ERR_ABORTED",
+    "[Customer Request Failed] https://script.googleusercontent.com/macros/echo?user_content_key=AUkAhnTyllAwk23QIgcZuUIV2lp6ZjaoZbEzuXCsesIl9xgfXOoUVg6SC4tveQUeMIGQ5Z7SeW286FTi21C230dyfE9pc6HLgC9dgNrNGORuq7yuBE8BKcGkQDDqCex3nAF_dPKF7zP4SpCiPwsmCdQ9nSkUXwIqr35z7fJx0NAN7OWO4V_9eaO6-_dxJSYAUIyTcLMW-M941pVijDcqrOJgz0ZG6Imvt--5jJcnAvigLTTIxGfo1DYo75UZ7Kx4pLLSuKS9bk0YoIaKu5CwUwVscmZfWvtGU0qaJ5XqkWYQGVLBEx3_NbD2H6Ttrt5r5w&lib=MHnGGzlFMuWGdWKUjKjLlsLvQpGQL2oqU - net::ERR_ABORTED",
+    "[Customer Request Failed] https://script.google.com/macros/s/AKfycbwArKzpi76YrLlbFmV7J22kityLspwaU_OwpdleJH2UGSOk8hEMxVXsEaHC2XMcM3UOpQ/exec?action=getBookingDetails - net::ERR_ABORTED",
+    "[Customer Request Failed] https://script.google.com/macros/s/AKfycbwArKzpi76YrLlbFmV7J22kityLspwaU_OwpdleJH2UGSOk8hEMxVXsEaHC2XMcM3UOpQ/exec?action=getCustomerFeedbacks - net::ERR_ABORTED"
+  ],
+  "adminArrivalAlertsCount": 0
+}

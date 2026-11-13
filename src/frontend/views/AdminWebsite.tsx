@@ -345,6 +345,101 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
     showToast('success', `Scannable QR standee downloaded for Table ${tbl.Table_Number}!`);
   }
 
+  async function downloadStandeeSVG(tbl: any) {
+    try {
+      const qrInfo = tableQRs[tbl.Table_ID];
+      const qrUrl = qrInfo?.qrUrl || `${window.location.origin}/?scan-table=1&token=${tbl.Table_ID}`;
+      const qrSvgString = await QRCode.toString(qrUrl, {
+        type: 'svg',
+        margin: 2,
+        errorCorrectionLevel: 'H',
+        color: { dark: '#292323', light: '#FFFFFF' },
+      });
+
+      const standeeSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 1200" width="800" height="1200">
+  <defs>
+    <style>
+      .brand-title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-weight: 800; font-size: 34px; fill: #3B1A08; text-anchor: middle; }
+      .brand-sub { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-weight: 700; font-size: 15px; fill: #F56A00; text-anchor: middle; letter-spacing: 2px; }
+      .table-title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-weight: 900; font-size: 46px; fill: #3B1A08; text-anchor: middle; }
+      .table-cap { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-weight: 600; font-size: 15px; fill: #F56A00; text-anchor: middle; }
+      .cta-main { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-weight: 800; font-size: 26px; fill: #3B1A08; text-anchor: middle; }
+      .cta-step { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-weight: 500; font-size: 15px; fill: #6B4C35; text-anchor: middle; }
+      .token-note { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 12px; fill: #8C6A50; text-anchor: middle; }
+    </style>
+  </defs>
+  <rect width="800" height="1200" fill="#FFF9F0" />
+  <rect x="24" y="24" width="752" height="1152" fill="none" stroke="#3B1A08" stroke-width="8" rx="24" />
+  <rect x="40" y="40" width="720" height="1120" fill="none" stroke="#F4B41A" stroke-width="3" rx="18" />
+  <text x="400" y="115" class="brand-title">${BRAND_CONFIG.name.toUpperCase()}</text>
+  <text x="400" y="150" class="brand-sub">${BRAND_CONFIG.subtitle.toUpperCase()}</text>
+  <rect x="200" y="195" width="400" height="120" rx="22" fill="#FFFFFF" stroke="#F56A00" stroke-width="2.5" />
+  <text x="400" y="260" class="table-title">TABLE ${tbl.Table_Number}</text>
+  <text x="400" y="295" class="table-cap">Seating Capacity: ${tbl.Seating_Capacity} Guests</text>
+  <g transform="translate(170, 360)">
+    <rect x="-15" y="-15" width="490" height="490" fill="#FFFFFF" stroke="#3B1A08" stroke-width="3" rx="20" />
+    <g transform="scale(0.92) translate(15, 15)">
+      ${qrSvgString.replace(/<\?xml.*?\?>/, '').replace(/<svg.*?>/, '').replace(/<\/svg>/, '')}
+    </g>
+  </g>
+  <text x="400" y="910" class="cta-main">Scan to View Menu &amp; Order</text>
+  <text x="400" y="955" class="cta-step">1. Point smartphone camera at QR code</text>
+  <text x="400" y="990" class="cta-step">2. Automatically opens Table ${tbl.Table_Number} menu</text>
+  <text x="400" y="1025" class="cta-step">3. Instant live dispatch straight to kitchen</text>
+  <text x="400" y="1110" class="token-note">Token: ${qrInfo?.token || tbl.Table_ID} • ${BRAND_CONFIG.fullName}</text>
+</svg>`;
+
+      const blob = new Blob([standeeSvg], { type: 'image/svg+xml;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.download = `TreatAndTaste_Table_${tbl.Table_Number}_QR.svg`;
+      link.href = url;
+      link.click();
+      URL.revokeObjectURL(url);
+      showToast('success', `Vector SVG standee downloaded for Table ${tbl.Table_Number}!`);
+    } catch (err: any) {
+      showToast('error', 'Failed to generate SVG QR code: ' + (err?.message || err));
+    }
+  }
+
+  // Handle background scroll locking and escape key dismissal for all admin modals
+  useEffect(() => {
+    const isAnyModalOpen = Boolean(
+      showUserModal ||
+      showMenuModal ||
+      showTableModal ||
+      showPayoutModal ||
+      selectedTableForStandee
+    );
+
+    if (!isAnyModalOpen) return;
+
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowUserModal(false);
+        setShowMenuModal(false);
+        setShowTableModal(false);
+        setShowPayoutModal(false);
+        setSelectedTableForStandee(null);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = originalOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [
+    showUserModal,
+    showMenuModal,
+    showTableModal,
+    showPayoutModal,
+    selectedTableForStandee,
+  ]);
+
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
     setAuthLoading(true);
@@ -1395,12 +1490,16 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
                       step="0.5"
                       min="0"
                       max="28"
-                      value={settingsForm.TAX_RATE_PERCENT || '5'}
+                      placeholder="Unconfigured (Awaiting Owner Confirmation)"
+                      value={settingsForm.TAX_RATE_PERCENT || ''}
                       onChange={(e) =>
                         setSettingsForm({ ...settingsForm, TAX_RATE_PERCENT: e.target.value })
                       }
                       className="w-full px-3 py-2 rounded-xl bg-white border border-[#D2D2D7] text-xs font-semibold text-[#1D1D1F] focus:outline-none focus:border-[#0071E3]"
                     />
+                    <p className="text-[10px] text-[#6E6E73]">
+                      Bill finalization is blocked until an approved rate is configured by the restaurant owner.
+                    </p>
                   </div>
 
                   {/* Grace Period Minutes */}
@@ -1573,423 +1672,548 @@ export const AdminWebsite: React.FC<AdminWebsiteProps> = ({
             </div>
           )}
 
-          {/* Modals: User Creation, Menu Item, Table, Payout */}
+          {/* Modals: User Creation, Menu Item, Table, Payout, QR Standee */}
+          {/* 1. User Creation Modal */}
           {showUserModal && (
-            <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
-              <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-4 shadow-xl border border-[#D2D2D7]/80">
-                <h3 className="font-semibold text-lg text-[#1D1D1F]">
-                  Provision Staff / Kitchen Account
-                </h3>
-                <form onSubmit={handleCreateUser} className="space-y-3.5">
-                  <div>
-                    <label className="block text-xs font-semibold text-[#1D1D1F] mb-1">Username</label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="e.g. waiter1"
-                      value={newUserName}
-                      onChange={(e) => setNewUserName(e.target.value)}
-                      className="w-full px-3.5 py-2 rounded-xl border border-[#D2D2D7] text-xs text-[#1D1D1F] focus:outline-none focus:border-[#0071E3]"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-[#1D1D1F] mb-1">Email</label>
-                    <input
-                      type="email"
-                      required
-                      placeholder="e.g. waiter1@treatandtaste.restaurant"
-                      value={newUserEmail}
-                      onChange={(e) => setNewUserEmail(e.target.value)}
-                      className="w-full px-3.5 py-2 rounded-xl border border-[#D2D2D7] text-xs text-[#1D1D1F] focus:outline-none focus:border-[#0071E3]"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-[#1D1D1F] mb-1">Role</label>
-                    <select
-                      value={newUserRole}
-                      onChange={(e) => setNewUserRole(e.target.value as any)}
-                      className="w-full px-3.5 py-2 rounded-xl border border-[#D2D2D7] bg-white text-xs text-[#1D1D1F] focus:outline-none focus:border-[#0071E3]"
-                    >
-                      <option value="Staff">Staff (Host & Waiter)</option>
-                      <option value="Kitchen">Kitchen (Chef & KDS)</option>
-                      <option value="Admin">Administrator</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-[#1D1D1F] mb-1">
-                      Initial Password (Min 8 chars)
-                    </label>
-                    <input
-                      type="password"
-                      required
-                      minLength={8}
-                      placeholder="Strong initial password"
-                      value={newUserPassword}
-                      onChange={(e) => setNewUserPassword(e.target.value)}
-                      className="w-full px-3.5 py-2 rounded-xl border border-[#D2D2D7] text-xs text-[#1D1D1F] focus:outline-none focus:border-[#0071E3]"
-                    />
-                    <span className="block text-[11px] text-[#6E6E73] mt-1">
-                      Hashed with PBKDF2-HMAC-SHA256 & random salt. Plaintext is never saved.
-                    </span>
-                  </div>
-                  <div className="flex space-x-2 pt-2">
-                    <button
-                      type="button"
-                      onClick={() => setShowUserModal(false)}
-                      className="flex-1 py-2.5 rounded-xl bg-[#F5F5F7] text-xs font-medium text-[#1D1D1F] hover:bg-[#E5E5EA] transition"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      className="flex-1 py-2.5 rounded-xl bg-[#0071E3] text-white text-xs font-medium shadow-xs hover:bg-[#0077ED] transition"
-                    >
-                      Create Account
-                    </button>
-                  </div>
-                </form>
-              </div>
-            </div>
-          )}
-
-          {/* Menu Modal */}
-          {showMenuModal && (
-            <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
-              <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-4 shadow-xl border border-[#D2D2D7]/80">
-                <h3 className="font-semibold text-lg text-[#1D1D1F]">
-                  {menuFoodId ? 'Edit Menu Dish' : 'Add New Menu Item'}
-                </h3>
-                <form onSubmit={handleUpsertMenuItem} className="space-y-3.5">
-                  <div>
-                    <label className="block text-xs font-semibold text-[#1D1D1F] mb-1">Food Name</label>
-                    <input
-                      type="text"
-                      required
-                      value={menuFoodName}
-                      onChange={(e) => setMenuFoodName(e.target.value)}
-                      className="w-full px-3.5 py-2 rounded-xl border border-[#D2D2D7] text-xs text-[#1D1D1F] focus:outline-none focus:border-[#0071E3]"
-                    />
-                  </div>
-                  <div className="grid grid-cols-2 gap-2.5">
-                    <div>
-                      <label className="block text-xs font-semibold text-[#1D1D1F] mb-1">Category</label>
-                      <select
-                        value={menuCategory}
-                        onChange={(e) => setMenuCategory(e.target.value)}
-                        className="w-full px-3.5 py-2 rounded-xl border border-[#D2D2D7] bg-white text-xs text-[#1D1D1F] focus:outline-none focus:border-[#0071E3]"
-                      >
-                        <option value="Starters">Starters</option>
-                        <option value="Mains">Mains</option>
-                        <option value="Desserts">Desserts</option>
-                        <option value="Beverages">Beverages</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-[#1D1D1F] mb-1">Price (₹)</label>
-                      <input
-                        type="number"
-                        min={1}
-                        required
-                        value={menuPrice}
-                        onChange={(e) => setMenuPrice(Number(e.target.value))}
-                        className="w-full px-3.5 py-2 rounded-xl border border-[#D2D2D7] text-xs text-[#1D1D1F] focus:outline-none focus:border-[#0071E3]"
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-[#1D1D1F] mb-1">Description</label>
-                    <textarea
-                      rows={2}
-                      required
-                      value={menuDesc}
-                      onChange={(e) => setMenuDesc(e.target.value)}
-                      className="w-full px-3.5 py-2 rounded-xl border border-[#D2D2D7] text-xs text-[#1D1D1F] focus:outline-none focus:border-[#0071E3]"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-[#1D1D1F] mb-1">
-                      Prep Time (Minutes)
-                    </label>
-                    <input
-                      type="number"
-                      min={1}
-                      required
-                      value={menuPrepTime}
-                      onChange={(e) => setMenuPrepTime(Number(e.target.value))}
-                      className="w-full px-3.5 py-2 rounded-xl border border-[#D2D2D7] text-xs text-[#1D1D1F] focus:outline-none focus:border-[#0071E3]"
-                    />
-                  </div>
-                  <div className="flex space-x-2 pt-2">
-                    <button
-                      type="button"
-                      onClick={() => setShowMenuModal(false)}
-                      className="flex-1 py-2.5 rounded-xl bg-[#F5F5F7] text-xs font-medium text-[#1D1D1F] hover:bg-[#E5E5EA] transition"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      className="flex-1 py-2.5 rounded-xl bg-[#0071E3] text-white text-xs font-medium shadow-xs hover:bg-[#0077ED] transition"
-                    >
-                      Save Menu Item
-                    </button>
-                  </div>
-                </form>
-              </div>
-            </div>
-          )}
-
-          {/* Table Modal */}
-          {showTableModal && (
-            <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
-              <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-4 shadow-xl border border-[#D2D2D7]/80">
-                <h3 className="font-semibold text-lg text-[#1D1D1F]">Add Physical Dining Table</h3>
-                <form onSubmit={handleAddTable} className="space-y-3.5">
-                  <div>
-                    <label className="block text-xs font-semibold text-[#1D1D1F] mb-1">Table Number</label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="e.g. T11"
-                      value={newTableNum}
-                      onChange={(e) => setNewTableNum(e.target.value)}
-                      className="w-full px-3.5 py-2 rounded-xl border border-[#D2D2D7] text-xs text-[#1D1D1F] font-semibold uppercase focus:outline-none focus:border-[#0071E3]"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-[#1D1D1F] mb-1">Seating Capacity</label>
-                    <input
-                      type="number"
-                      min={1}
-                      max={20}
-                      required
-                      value={newTableCap}
-                      onChange={(e) => setNewTableCap(Number(e.target.value))}
-                      className="w-full px-3.5 py-2 rounded-xl border border-[#D2D2D7] text-xs text-[#1D1D1F] focus:outline-none focus:border-[#0071E3]"
-                    />
-                  </div>
-                  <div className="flex space-x-2 pt-2">
-                    <button
-                      type="button"
-                      onClick={() => setShowTableModal(false)}
-                      className="flex-1 py-2.5 rounded-xl bg-[#F5F5F7] text-xs font-medium text-[#1D1D1F] hover:bg-[#E5E5EA] transition"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      className="flex-1 py-2.5 rounded-xl bg-[#0071E3] text-white text-xs font-medium shadow-xs hover:bg-[#0077ED] transition"
-                    >
-                      Add Table
-                    </button>
-                  </div>
-                </form>
-              </div>
-            </div>
-          )}
-
-          {/* Payout Completion Modal */}
-          {showPayoutModal && (
-            <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
-              <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-4 shadow-xl border border-[#D2D2D7]/80">
-                <h3 className="font-semibold text-lg text-[#1D1D1F]">
-                  Record Manual Refund Payout
-                </h3>
-                <form onSubmit={handleCompletePayout} className="space-y-3.5">
-                  <div>
-                    <label className="block text-xs font-semibold text-[#1D1D1F] mb-1">
-                      Payment ID
-                    </label>
-                    <input
-                      type="text"
-                      disabled
-                      value={payoutPaymentId}
-                      className="w-full px-3.5 py-2 rounded-xl border border-[#D2D2D7] bg-[#F5F5F7] text-xs font-mono text-[#6E6E73]"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-[#1D1D1F] mb-1">
-                      Completed Refund Amount (₹)
-                    </label>
-                    <input
-                      type="number"
-                      required
-                      min={1}
-                      value={payoutAmount}
-                      onChange={(e) => setPayoutAmount(Number(e.target.value))}
-                      className="w-full px-3.5 py-2 rounded-xl border border-[#D2D2D7] text-xs text-[#1D1D1F] font-semibold focus:outline-none focus:border-[#0071E3]"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-[#1D1D1F] mb-1">
-                      Outbound Bank Transfer / UPI UTR
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="e.g. REF-UTR-987654"
-                      value={payoutUtr}
-                      onChange={(e) => setPayoutUtr(e.target.value)}
-                      className="w-full px-3.5 py-2 rounded-xl border border-[#D2D2D7] text-xs font-mono text-[#1D1D1F] focus:outline-none focus:border-[#0071E3]"
-                    />
-                  </div>
-                  <div className="flex space-x-2 pt-2">
-                    <button
-                      type="button"
-                      onClick={() => setShowPayoutModal(false)}
-                      className="flex-1 py-2.5 rounded-xl bg-[#F5F5F7] text-xs font-medium text-[#1D1D1F] hover:bg-[#E5E5EA] transition"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      className="flex-1 py-2.5 rounded-xl bg-[#248A3D] text-white text-xs font-medium shadow-xs hover:bg-[#1E7433] transition"
-                    >
-                      Confirm Payout Completed
-                    </button>
-                  </div>
-                </form>
-              </div>
-            </div>
-          )}
-
-          {/* Table QR Standee Preview & Download Modal */}
-          {selectedTableForStandee && (
-            <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
-              <div className="bg-white rounded-3xl max-w-lg w-full p-6 space-y-5 shadow-2xl border border-[#D2D2D7]/80 my-8">
-                <div className="flex items-center justify-between pb-3 border-b border-[#D2D2D7]/70">
+            <div
+              onClick={(e) => {
+                if (e.target === e.currentTarget) setShowUserModal(false);
+              }}
+              className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto touch-scroll"
+            >
+              <div
+                onClick={(e) => e.stopPropagation()}
+                className="bg-white rounded-3xl max-w-md w-full shadow-2xl border border-[#D2D2D7]/80 flex flex-col max-h-[92vh] sm:max-h-[90vh] my-auto overflow-hidden animate-in fade-in zoom-in-95 duration-200"
+              >
+                <div className="sticky top-0 z-10 bg-white/95 backdrop-blur-sm px-4 sm:px-6 py-3.5 border-b border-[#E6D5C3] flex items-center justify-between shrink-0">
                   <div className="flex items-center space-x-2">
-                    <QrCode className="w-5 h-5 text-[#0071E3]" />
-                    <h3 className="font-semibold text-lg text-[#1D1D1F]">
-                      Table Standee Card — {selectedTableForStandee.Table_Number}
+                    <Users className="w-5 h-5 text-[#F56A00]" />
+                    <h3 className="font-bold text-base sm:text-lg text-[#3B1A08]">
+                      Provision Staff / Kitchen Account
                     </h3>
                   </div>
                   <button
-                    onClick={() => setSelectedTableForStandee(null)}
-                    className="p-1 rounded-full text-[#6E6E73] hover:text-[#1D1D1F] hover:bg-[#F5F5F7] transition cursor-pointer"
+                    type="button"
+                    onClick={() => setShowUserModal(false)}
+                    aria-label="Close modal"
+                    className="p-2 -mr-1 rounded-full text-[#6B4C35] hover:text-[#3B1A08] hover:bg-[#FDF4E7] transition cursor-pointer"
                   >
                     <X className="w-5 h-5" />
                   </button>
                 </div>
 
-                {/* Printable Standee Card Container */}
-                <div id="printable-standee" className="bg-[#FFF9F0] p-6 rounded-2xl border-2 border-[#3B1A08] shadow-inner text-center space-y-4">
-                  {/* Brand Header */}
-                  <div className="flex flex-col items-center justify-center space-y-1">
-                    <BrandLogo size="lg" />
-                  </div>
-
-                  {/* Table Badge */}
-                  <div className="inline-block px-6 py-2.5 rounded-2xl bg-white border border-[#E6D5C3] shadow-xs">
-                    <span className="text-2xl font-black text-[#3B1A08] tracking-tight block">
-                      TABLE {selectedTableForStandee.Table_Number}
-                    </span>
-                    <span className="text-xs font-semibold text-[#F56A00]">
-                      Seating Capacity: {selectedTableForStandee.Seating_Capacity} Guests
-                    </span>
-                  </div>
-
-                  {/* Real Scannable Table-Specific QR Code */}
-                  <div className="w-56 h-56 bg-white p-3 rounded-2xl border-2 border-[#3B1A08] mx-auto shadow-md relative flex items-center justify-center">
-                    {tableQRs[selectedTableForStandee.Table_ID]?.dataUrl ? (
-                      <img
-                        src={tableQRs[selectedTableForStandee.Table_ID].dataUrl}
-                        alt={`QR Code for Table ${selectedTableForStandee.Table_Number}`}
-                        className="w-full h-full object-contain rounded-lg"
-                      />
-                    ) : (
-                      <div className="text-xs text-[#6B4C35]">Generating QR...</div>
-                    )}
-                  </div>
-
-                  {/* Token Metadata & Status Controls */}
-                  {tableQRs[selectedTableForStandee.Table_ID] && (
-                    <div className="text-[11px] bg-white p-3 rounded-xl border border-[#E6D5C3] text-left space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="font-semibold text-[#3B1A08]">
-                          Token: <code className="text-[#F56A00]">{tableQRs[selectedTableForStandee.Table_ID].token}</code>
-                        </span>
-                        <span
-                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                            tableQRs[selectedTableForStandee.Table_ID].isActive
-                              ? 'bg-green-100 text-green-800'
-                              : 'bg-red-100 text-red-800'
-                          }`}
-                        >
-                          {tableQRs[selectedTableForStandee.Table_ID].isActive ? 'ACTIVE' : 'DISABLED'}
-                        </span>
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          onClick={() => handleRegenerateQR(selectedTableForStandee.Table_ID)}
-                          className="flex-1 py-1.5 rounded-lg bg-[#FDF4E7] border border-[#F4B41A] text-[#3B1A08] font-semibold hover:bg-[#F5E6D3] transition cursor-pointer"
-                        >
-                          Regenerate Token
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleToggleQR(
-                              selectedTableForStandee.Table_ID,
-                              tableQRs[selectedTableForStandee.Table_ID].isActive
-                            )
-                          }
-                          className="flex-1 py-1.5 rounded-lg bg-[#FFF9F0] border border-[#E6D5C3] text-[#3B1A08] font-semibold hover:bg-[#FDF4E7] transition cursor-pointer"
-                        >
-                          {tableQRs[selectedTableForStandee.Table_ID].isActive ? 'Disable QR' : 'Enable QR'}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="space-y-1">
-                    <p className="text-xs font-bold text-[#3B1A08]">
-                      Scan to Reserve, View Menu & Order
-                    </p>
-                    <p className="text-[11px] text-[#6B4C35]">
-                      Orders are automatically tagged to Table {selectedTableForStandee.Table_Number} and sent straight to the {BRAND_CONFIG.name} Kitchen.
-                    </p>
-                  </div>
-
-                  {/* Dining Wi-Fi */}
-                  <div className="p-3 bg-white rounded-xl border border-[#E6D5C3] text-[11px] text-[#6B4C35] flex items-center justify-around">
+                <div className="overflow-y-auto px-4 sm:px-6 py-4 flex-1 overscroll-contain">
+                  <form onSubmit={handleCreateUser} className="space-y-3.5">
                     <div>
-                      <span className="block font-semibold text-[#3B1A08]">Complimentary Wi-Fi</span>
-                      <span>SSID: <strong>{BRAND_CONFIG.wifiSsid}</strong></span>
+                      <label className="block text-xs font-semibold text-[#3B1A08] mb-1">Username</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="e.g. waiter1"
+                        value={newUserName}
+                        onChange={(e) => setNewUserName(e.target.value)}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-[#E6D5C3] text-xs text-[#3B1A08] focus:outline-none focus:border-[#F56A00]"
+                      />
                     </div>
-                    <div className="border-l border-[#E6D5C3] pl-4 text-left">
-                      <span className="block font-semibold text-[#3B1A08]">Password</span>
-                      <span className="font-mono">{BRAND_CONFIG.wifiPassword}</span>
+                    <div>
+                      <label className="block text-xs font-semibold text-[#3B1A08] mb-1">Email</label>
+                      <input
+                        type="email"
+                        required
+                        placeholder="e.g. waiter1@treatandtaste.restaurant"
+                        value={newUserEmail}
+                        onChange={(e) => setNewUserEmail(e.target.value)}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-[#E6D5C3] text-xs text-[#3B1A08] focus:outline-none focus:border-[#F56A00]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-[#3B1A08] mb-1">Role</label>
+                      <select
+                        value={newUserRole}
+                        onChange={(e) => setNewUserRole(e.target.value as any)}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-[#E6D5C3] bg-white text-xs text-[#3B1A08] focus:outline-none focus:border-[#F56A00]"
+                      >
+                        <option value="Staff">Staff (Host & Waiter)</option>
+                        <option value="Kitchen">Kitchen (Chef & KDS)</option>
+                        <option value="Admin">Administrator</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-[#3B1A08] mb-1">
+                        Initial Password (Min 8 chars)
+                      </label>
+                      <input
+                        type="password"
+                        required
+                        minLength={8}
+                        placeholder="Strong initial password"
+                        value={newUserPassword}
+                        onChange={(e) => setNewUserPassword(e.target.value)}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-[#E6D5C3] text-xs text-[#3B1A08] focus:outline-none focus:border-[#F56A00]"
+                      />
+                      <span className="block text-[11px] text-[#6B4C35] mt-1">
+                        Hashed with PBKDF2-HMAC-SHA256 & random salt. Plaintext is never saved.
+                      </span>
+                    </div>
+                    <div className="flex space-x-2 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowUserModal(false)}
+                        className="flex-1 py-2.5 rounded-xl bg-[#FDF4E7] text-xs font-semibold text-[#3B1A08] hover:bg-[#F5E6D3] transition cursor-pointer min-h-[44px]"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        className="flex-1 py-2.5 rounded-xl bg-[#F56A00] text-white text-xs font-semibold shadow-xs hover:bg-[#D95800] transition cursor-pointer min-h-[44px]"
+                      >
+                        Create Account
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 2. Menu Item Modal */}
+          {showMenuModal && (
+            <div
+              onClick={(e) => {
+                if (e.target === e.currentTarget) setShowMenuModal(false);
+              }}
+              className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto touch-scroll"
+            >
+              <div
+                onClick={(e) => e.stopPropagation()}
+                className="bg-white rounded-3xl max-w-md w-full shadow-2xl border border-[#D2D2D7]/80 flex flex-col max-h-[92vh] sm:max-h-[90vh] my-auto overflow-hidden animate-in fade-in zoom-in-95 duration-200"
+              >
+                <div className="sticky top-0 z-10 bg-white/95 backdrop-blur-sm px-4 sm:px-6 py-3.5 border-b border-[#E6D5C3] flex items-center justify-between shrink-0">
+                  <div className="flex items-center space-x-2">
+                    <Utensils className="w-5 h-5 text-[#F56A00]" />
+                    <h3 className="font-bold text-base sm:text-lg text-[#3B1A08]">
+                      {menuFoodId ? 'Edit Menu Dish' : 'Add New Menu Item'}
+                    </h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowMenuModal(false)}
+                    aria-label="Close modal"
+                    className="p-2 -mr-1 rounded-full text-[#6B4C35] hover:text-[#3B1A08] hover:bg-[#FDF4E7] transition cursor-pointer"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <div className="overflow-y-auto px-4 sm:px-6 py-4 flex-1 overscroll-contain">
+                  <form onSubmit={handleUpsertMenuItem} className="space-y-3.5">
+                    <div>
+                      <label className="block text-xs font-semibold text-[#3B1A08] mb-1">Food Name</label>
+                      <input
+                        type="text"
+                        required
+                        value={menuFoodName}
+                        onChange={(e) => setMenuFoodName(e.target.value)}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-[#E6D5C3] text-xs text-[#3B1A08] focus:outline-none focus:border-[#F56A00]"
+                      />
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <div>
+                        <label className="block text-xs font-semibold text-[#3B1A08] mb-1">Category</label>
+                        <select
+                          value={menuCategory}
+                          onChange={(e) => setMenuCategory(e.target.value)}
+                          className="w-full px-3.5 py-2.5 rounded-xl border border-[#E6D5C3] bg-white text-xs text-[#3B1A08] focus:outline-none focus:border-[#F56A00]"
+                        >
+                          <option value="Starters">Starters</option>
+                          <option value="Mains">Mains</option>
+                          <option value="Desserts">Desserts</option>
+                          <option value="Beverages">Beverages</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-[#3B1A08] mb-1">Price (₹)</label>
+                        <input
+                          type="number"
+                          min={1}
+                          required
+                          value={menuPrice}
+                          onChange={(e) => setMenuPrice(Number(e.target.value))}
+                          className="w-full px-3.5 py-2.5 rounded-xl border border-[#E6D5C3] text-xs text-[#3B1A08] focus:outline-none focus:border-[#F56A00]"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-[#3B1A08] mb-1">Description</label>
+                      <textarea
+                        rows={2}
+                        required
+                        value={menuDesc}
+                        onChange={(e) => setMenuDesc(e.target.value)}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-[#E6D5C3] text-xs text-[#3B1A08] focus:outline-none focus:border-[#F56A00]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-[#3B1A08] mb-1">
+                        Prep Time (Minutes)
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        required
+                        value={menuPrepTime}
+                        onChange={(e) => setMenuPrepTime(Number(e.target.value))}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-[#E6D5C3] text-xs text-[#3B1A08] focus:outline-none focus:border-[#F56A00]"
+                      />
+                    </div>
+                    <div className="flex space-x-2 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowMenuModal(false)}
+                        className="flex-1 py-2.5 rounded-xl bg-[#FDF4E7] text-xs font-semibold text-[#3B1A08] hover:bg-[#F5E6D3] transition cursor-pointer min-h-[44px]"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        className="flex-1 py-2.5 rounded-xl bg-[#F56A00] text-white text-xs font-semibold shadow-xs hover:bg-[#D95800] transition cursor-pointer min-h-[44px]"
+                      >
+                        Save Menu Item
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 3. Physical Dining Table Modal */}
+          {showTableModal && (
+            <div
+              onClick={(e) => {
+                if (e.target === e.currentTarget) setShowTableModal(false);
+              }}
+              className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto touch-scroll"
+            >
+              <div
+                onClick={(e) => e.stopPropagation()}
+                className="bg-white rounded-3xl max-w-md w-full shadow-2xl border border-[#D2D2D7]/80 flex flex-col max-h-[92vh] sm:max-h-[90vh] my-auto overflow-hidden animate-in fade-in zoom-in-95 duration-200"
+              >
+                <div className="sticky top-0 z-10 bg-white/95 backdrop-blur-sm px-4 sm:px-6 py-3.5 border-b border-[#E6D5C3] flex items-center justify-between shrink-0">
+                  <div className="flex items-center space-x-2">
+                    <Armchair className="w-5 h-5 text-[#F56A00]" />
+                    <h3 className="font-bold text-base sm:text-lg text-[#3B1A08]">
+                      Add Physical Dining Table
+                    </h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowTableModal(false)}
+                    aria-label="Close modal"
+                    className="p-2 -mr-1 rounded-full text-[#6B4C35] hover:text-[#3B1A08] hover:bg-[#FDF4E7] transition cursor-pointer"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <div className="overflow-y-auto px-4 sm:px-6 py-4 flex-1 overscroll-contain">
+                  <form onSubmit={handleAddTable} className="space-y-3.5">
+                    <div>
+                      <label className="block text-xs font-semibold text-[#3B1A08] mb-1">Table Number</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="e.g. T11"
+                        value={newTableNum}
+                        onChange={(e) => setNewTableNum(e.target.value)}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-[#E6D5C3] text-xs text-[#3B1A08] font-semibold uppercase focus:outline-none focus:border-[#F56A00]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-[#3B1A08] mb-1">Seating Capacity</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={20}
+                        required
+                        value={newTableCap}
+                        onChange={(e) => setNewTableCap(Number(e.target.value))}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-[#E6D5C3] text-xs text-[#3B1A08] focus:outline-none focus:border-[#F56A00]"
+                      />
+                    </div>
+                    <div className="flex space-x-2 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowTableModal(false)}
+                        className="flex-1 py-2.5 rounded-xl bg-[#FDF4E7] text-xs font-semibold text-[#3B1A08] hover:bg-[#F5E6D3] transition cursor-pointer min-h-[44px]"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        className="flex-1 py-2.5 rounded-xl bg-[#F56A00] text-white text-xs font-semibold shadow-xs hover:bg-[#D95800] transition cursor-pointer min-h-[44px]"
+                      >
+                        Add Table
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 4. Payout Completion Modal */}
+          {showPayoutModal && (
+            <div
+              onClick={(e) => {
+                if (e.target === e.currentTarget) setShowPayoutModal(false);
+              }}
+              className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto touch-scroll"
+            >
+              <div
+                onClick={(e) => e.stopPropagation()}
+                className="bg-white rounded-3xl max-w-md w-full shadow-2xl border border-[#D2D2D7]/80 flex flex-col max-h-[92vh] sm:max-h-[90vh] my-auto overflow-hidden animate-in fade-in zoom-in-95 duration-200"
+              >
+                <div className="sticky top-0 z-10 bg-white/95 backdrop-blur-sm px-4 sm:px-6 py-3.5 border-b border-[#E6D5C3] flex items-center justify-between shrink-0">
+                  <div className="flex items-center space-x-2">
+                    <DollarSign className="w-5 h-5 text-[#248A3D]" />
+                    <h3 className="font-bold text-base sm:text-lg text-[#3B1A08]">
+                      Record Manual Refund Payout
+                    </h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowPayoutModal(false)}
+                    aria-label="Close modal"
+                    className="p-2 -mr-1 rounded-full text-[#6B4C35] hover:text-[#3B1A08] hover:bg-[#FDF4E7] transition cursor-pointer"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <div className="overflow-y-auto px-4 sm:px-6 py-4 flex-1 overscroll-contain">
+                  <form onSubmit={handleCompletePayout} className="space-y-3.5">
+                    <div>
+                      <label className="block text-xs font-semibold text-[#3B1A08] mb-1">
+                        Payment ID
+                      </label>
+                      <input
+                        type="text"
+                        disabled
+                        value={payoutPaymentId}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-[#E6D5C3] bg-[#FDF4E7] text-xs font-mono text-[#6B4C35]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-[#3B1A08] mb-1">
+                        Completed Refund Amount (₹)
+                      </label>
+                      <input
+                        type="number"
+                        required
+                        min={1}
+                        value={payoutAmount}
+                        onChange={(e) => setPayoutAmount(Number(e.target.value))}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-[#E6D5C3] text-xs text-[#3B1A08] font-semibold focus:outline-none focus:border-[#F56A00]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-[#3B1A08] mb-1">
+                        Outbound Bank Transfer / UPI UTR
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="e.g. REF-UTR-987654"
+                        value={payoutUtr}
+                        onChange={(e) => setPayoutUtr(e.target.value)}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-[#E6D5C3] text-xs font-mono text-[#3B1A08] focus:outline-none focus:border-[#F56A00]"
+                      />
+                    </div>
+                    <div className="flex space-x-2 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowPayoutModal(false)}
+                        className="flex-1 py-2.5 rounded-xl bg-[#FDF4E7] text-xs font-semibold text-[#3B1A08] hover:bg-[#F5E6D3] transition cursor-pointer min-h-[44px]"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        className="flex-1 py-2.5 rounded-xl bg-[#248A3D] text-white text-xs font-semibold shadow-xs hover:bg-[#1E7433] transition cursor-pointer min-h-[44px]"
+                      >
+                        Confirm Payout Completed
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 5. CRITICAL FIX: Table QR Standee Preview & Download Modal */}
+          {selectedTableForStandee && (
+            <div
+              onClick={(e) => {
+                if (e.target === e.currentTarget) {
+                  setSelectedTableForStandee(null);
+                }
+              }}
+              className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto touch-scroll"
+            >
+              <div
+                onClick={(e) => e.stopPropagation()}
+                className="bg-white rounded-3xl max-w-lg w-full shadow-2xl border border-[#D2D2D7]/80 flex flex-col max-h-[92vh] sm:max-h-[90vh] my-auto overflow-hidden animate-in fade-in zoom-in-95 duration-200"
+              >
+                {/* Sticky Header */}
+                <div className="sticky top-0 z-10 bg-white/95 backdrop-blur-sm px-4 sm:px-6 py-3.5 border-b border-[#E6D5C3] flex items-center justify-between shrink-0">
+                  <div className="flex items-center space-x-2 min-w-0 pr-2">
+                    <QrCode className="w-5 h-5 text-[#F56A00] shrink-0" />
+                    <h3 className="font-bold text-base sm:text-lg text-[#3B1A08] truncate">
+                      Table Standee — Table {selectedTableForStandee.Table_Number}
+                    </h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedTableForStandee(null)}
+                    aria-label="Close modal"
+                    className="p-2 -mr-1 rounded-full text-[#6B4C35] hover:text-[#3B1A08] hover:bg-[#FDF4E7] transition cursor-pointer shrink-0 touch-manipulation"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                {/* Scrollable Content Body */}
+                <div className="overflow-y-auto px-4 sm:px-6 py-4 space-y-4 flex-1 overscroll-contain">
+                  {/* Printable Standee Card Container */}
+                  <div id="printable-standee" className="bg-[#FFF9F0] p-4 sm:p-6 rounded-2xl border-2 border-[#3B1A08] shadow-inner text-center space-y-3 sm:space-y-4">
+                    {/* Brand Header */}
+                    <div className="flex flex-col items-center justify-center space-y-1">
+                      <BrandLogo size="md" />
+                    </div>
+
+                    {/* Table Badge */}
+                    <div className="inline-block px-5 py-2 rounded-2xl bg-white border border-[#E6D5C3] shadow-xs">
+                      <span className="text-xl sm:text-2xl font-black text-[#3B1A08] tracking-tight block">
+                        TABLE {selectedTableForStandee.Table_Number}
+                      </span>
+                      <span className="text-[11px] sm:text-xs font-semibold text-[#F56A00]">
+                        Seating Capacity: {selectedTableForStandee.Seating_Capacity} Guests
+                      </span>
+                    </div>
+
+                    {/* Responsive Scannable Table-Specific QR Code */}
+                    <div className="w-40 h-40 sm:w-52 sm:h-52 bg-white p-2.5 sm:p-3 rounded-2xl border-2 border-[#3B1A08] mx-auto shadow-md relative flex items-center justify-center">
+                      {tableQRs[selectedTableForStandee.Table_ID]?.dataUrl ? (
+                        <img
+                          src={tableQRs[selectedTableForStandee.Table_ID].dataUrl}
+                          alt={`QR Code for Table ${selectedTableForStandee.Table_Number}`}
+                          className="w-full h-full object-contain rounded-lg"
+                        />
+                      ) : (
+                        <div className="text-xs text-[#6B4C35]">Generating QR...</div>
+                      )}
+                    </div>
+
+                    {/* Token Metadata & Status Controls */}
+                    {tableQRs[selectedTableForStandee.Table_ID] && (
+                      <div className="text-[11px] bg-white p-3 rounded-xl border border-[#E6D5C3] text-left space-y-2">
+                        <div className="flex flex-wrap items-center justify-between gap-1">
+                          <span className="font-semibold text-[#3B1A08] truncate max-w-[200px]">
+                            Token: <code className="text-[#F56A00]">{tableQRs[selectedTableForStandee.Table_ID].token}</code>
+                          </span>
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold shrink-0 ${
+                              tableQRs[selectedTableForStandee.Table_ID].isActive
+                                ? 'bg-green-100 text-green-800'
+                                : 'bg-red-100 text-red-800'
+                            }`}
+                          >
+                            {tableQRs[selectedTableForStandee.Table_ID].isActive ? 'ACTIVE' : 'DISABLED'}
+                          </span>
+                        </div>
+                        <div className="flex flex-col sm:flex-row gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleRegenerateQR(selectedTableForStandee.Table_ID)}
+                            className="flex-1 py-2 px-3 rounded-lg bg-[#FDF4E7] border border-[#F4B41A] text-[#3B1A08] text-xs font-semibold hover:bg-[#F5E6D3] transition cursor-pointer min-h-[38px]"
+                          >
+                            Regenerate Token
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleToggleQR(
+                                selectedTableForStandee.Table_ID,
+                                tableQRs[selectedTableForStandee.Table_ID].isActive
+                              )
+                            }
+                            className="flex-1 py-2 px-3 rounded-lg bg-[#FFF9F0] border border-[#E6D5C3] text-[#3B1A08] text-xs font-semibold hover:bg-[#FDF4E7] transition cursor-pointer min-h-[38px]"
+                          >
+                            {tableQRs[selectedTableForStandee.Table_ID].isActive ? 'Disable QR' : 'Enable QR'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="space-y-1">
+                      <p className="text-xs font-bold text-[#3B1A08]">
+                        Scan to Reserve, View Menu &amp; Order
+                      </p>
+                      <p className="text-[11px] text-[#6B4C35] leading-relaxed">
+                        Orders are automatically tagged to Table {selectedTableForStandee.Table_Number} and sent straight to the {BRAND_CONFIG.name} Kitchen.
+                      </p>
+                    </div>
+
+                    {/* Dining Wi-Fi */}
+                    <div className="p-3 bg-white rounded-xl border border-[#E6D5C3] text-[11px] text-[#6B4C35] flex flex-col sm:flex-row items-center justify-around gap-2 text-center sm:text-left">
+                      <div>
+                        <span className="block font-semibold text-[#3B1A08]">Complimentary Wi-Fi</span>
+                        <span>SSID: <strong>{BRAND_CONFIG.wifiSsid}</strong></span>
+                      </div>
+                      <div className="border-t sm:border-t-0 sm:border-l border-[#E6D5C3] pt-2 sm:pt-0 sm:pl-4">
+                        <span className="block font-semibold text-[#3B1A08]">Password</span>
+                        <span className="font-mono">{BRAND_CONFIG.wifiPassword}</span>
+                      </div>
                     </div>
                   </div>
                 </div>
 
-                {/* Modal Actions */}
-                <div className="flex flex-col sm:flex-row gap-2 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => downloadStandeePNG(selectedTableForStandee)}
-                    className="flex-1 py-3 rounded-full bg-[#F56A00] hover:bg-[#D95800] text-white text-xs font-semibold shadow-xs transition flex items-center justify-center space-x-2 cursor-pointer active:scale-98"
-                  >
-                    <Download className="w-4 h-4" />
-                    <span>Download Standee (High-Res PNG)</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => window.print()}
-                    className="px-5 py-3 rounded-full bg-[#FDF4E7] hover:bg-[#F5E6D3] text-[#3B1A08] text-xs font-semibold border border-[#E6D5C3] transition flex items-center justify-center space-x-1.5 cursor-pointer"
-                  >
-                    <Printer className="w-4 h-4 text-[#6B4C35]" />
-                    <span>Print</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedTableForStandee(null)}
-                    className="px-4 py-3 rounded-full bg-white hover:bg-[#FFF9F0] text-[#6B4C35] text-xs font-semibold border border-[#E6D5C3] transition cursor-pointer"
-                  >
-                    Close
-                  </button>
+                {/* Sticky Action Footer */}
+                <div className="sticky bottom-0 z-10 bg-white/95 backdrop-blur-sm px-4 sm:px-6 py-3 border-t border-[#E6D5C3] shrink-0">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => downloadStandeePNG(selectedTableForStandee)}
+                      className="py-2.5 px-3 rounded-full bg-[#F56A00] hover:bg-[#D95800] text-white text-xs font-semibold shadow-xs transition flex items-center justify-center space-x-1.5 cursor-pointer active:scale-98 min-h-[44px]"
+                    >
+                      <Download className="w-4 h-4 shrink-0" />
+                      <span>Download PNG</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => downloadStandeeSVG(selectedTableForStandee)}
+                      className="py-2.5 px-3 rounded-full bg-[#3B1A08] hover:bg-[#2A1104] text-white text-xs font-semibold shadow-xs transition flex items-center justify-center space-x-1.5 cursor-pointer active:scale-98 min-h-[44px]"
+                    >
+                      <Download className="w-4 h-4 shrink-0 text-[#F4B41A]" />
+                      <span>Download SVG</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => window.print()}
+                      className="py-2.5 px-3 rounded-full bg-[#FDF4E7] hover:bg-[#F5E6D3] text-[#3B1A08] text-xs font-semibold border border-[#E6D5C3] transition flex items-center justify-center space-x-1.5 cursor-pointer min-h-[44px]"
+                    >
+                      <Printer className="w-4 h-4 text-[#6B4C35] shrink-0" />
+                      <span>Print Standee</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedTableForStandee(null)}
+                      className="py-2.5 px-3 rounded-full bg-white hover:bg-[#FFF9F0] text-[#6B4C35] text-xs font-semibold border border-[#E6D5C3] transition cursor-pointer min-h-[44px]"
+                    >
+                      Close
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>

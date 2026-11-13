@@ -15,6 +15,7 @@ import {
   generateSessionToken,
   generateSalt,
   hashPassword,
+  hashSessionToken,
 } from '../crypto';
 
 export interface CustomerSession {
@@ -108,8 +109,20 @@ export class AuthService {
           message: 'New customer profile details (name and email) are required.',
         };
       }
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(params.email.trim())) {
+      const cleanEmail = params.email.trim().toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
         return { success: false, message: 'Please enter a valid email address.' };
+      }
+
+      const duplicateEmail = db.findOne(
+        'Customers',
+        (c) => String(c.Email || '').trim().toLowerCase() === cleanEmail
+      );
+      if (duplicateEmail) {
+        return {
+          success: false,
+          message: 'An account with this email address already exists. Please sign in using your registered mobile number.',
+        };
       }
 
       isNewCustomer = true;
@@ -118,7 +131,7 @@ export class AuthService {
         Customer_ID: customerId,
         Customer_Name: params.customerName.trim(),
         Mobile_Number: mobile,
-        Email: params.email.trim().toLowerCase(),
+        Email: cleanEmail,
         Created_At: new Date().toISOString(),
         OTP_Hash: '',
         OTP_Expiry: '',
@@ -195,6 +208,28 @@ export class AuthService {
   }
 
   /**
+   * Returns configured customer trusted session duration in ms (default 24h)
+   */
+  public static getCustomerSessionDurationMs(): number {
+    const setting = db.findOne('Restaurant_Settings', (s) => s.Setting_Key === 'CUSTOMER_SESSION_HOURS');
+    const hours = Number(setting?.Setting_Value || 24);
+    return Math.max(1, hours) * 60 * 60 * 1000;
+  }
+
+  private static encodeSessionValue(token: string, durationMs: number): string {
+    const tokenHash = hashSessionToken(token);
+    return `${tokenHash}|${Date.now() + durationMs}`;
+  }
+
+  private static parseCustomerSessionValue(stored: string): { tokenHash: string; expiresAt: number | null } {
+    const raw = String(stored || '').trim();
+    if (!raw) return { tokenHash: '', expiresAt: null };
+    const [tokenHash, expStr] = raw.split('|');
+    const exp = expStr ? Number(expStr) : null;
+    return { tokenHash, expiresAt: exp && Number.isFinite(exp) ? exp : null };
+  }
+
+  /**
    * Verify Customer OTP and issue session
    */
   public static verifyCustomerOTP(params: {
@@ -249,13 +284,14 @@ export class AuthService {
       };
     }
 
-    // Generate new customer session
+    // Generate new trusted customer session with expiry
     const sessionId = generateSessionToken('cust');
+    const encodedSession = this.encodeSessionValue(sessionId, this.getCustomerSessionDurationMs());
     db.updateRow('Customers', 'Customer_ID', customer.Customer_ID, {
       OTP_Hash: '', // Invalidate used OTP
       OTP_Expiry: '',
       OTP_Attempts: 0,
-      OTP_Session_ID: sessionId,
+      OTP_Session_ID: encodedSession,
     });
 
     const session: CustomerSession = {
@@ -286,12 +322,15 @@ export class AuthService {
   }): CustomerSession {
     const mobile = params.mobileNumber.trim();
     const existing = db.findOne('Customers', (c) => c.Mobile_Number === mobile || c.Customer_ID === params.customerId);
+    const encodedSession = this.encodeSessionValue(params.sessionId, this.getCustomerSessionDurationMs());
     if (existing) {
       db.updateRow('Customers', 'Customer_ID', existing.Customer_ID, {
+        Customer_Name: params.customerName || existing.Customer_Name,
+        Email: params.email || existing.Email,
         OTP_Hash: '',
         OTP_Expiry: '',
         OTP_Attempts: 0,
-        OTP_Session_ID: params.sessionId,
+        OTP_Session_ID: encodedSession,
       });
     } else {
       db.insertRow('Customers', {
@@ -304,15 +343,15 @@ export class AuthService {
         OTP_Expiry: '',
         OTP_Attempts: 0,
         OTP_Last_Sent_At: '',
-        OTP_Session_ID: params.sessionId,
+        OTP_Session_ID: encodedSession,
       });
     }
     return {
       sessionId: params.sessionId,
-      customerId: params.customerId,
-      customerName: params.customerName,
-      mobileNumber: mobile,
-      email: params.email,
+      customerId: existing?.Customer_ID || params.customerId,
+      customerName: params.customerName || existing?.Customer_Name || 'Guest',
+      mobileNumber: mobile || existing?.Mobile_Number || '',
+      email: params.email || existing?.Email || '',
       role: 'Customer',
     };
   }
@@ -325,14 +364,22 @@ export class AuthService {
     message: string;
     session?: CustomerSession;
   } {
-    const customer = db.findOne('Customers', (c) => c.Mobile_Number === mobileNumber);
+    let customer = db.findOne('Customers', (c) => c.Mobile_Number === mobileNumber);
     if (!customer) {
-      return { success: false, message: 'Demo customer not found.' };
+      const custId = `CUST-${Date.now().toString().slice(-6)}`;
+      customer = {
+        Customer_ID: custId,
+        Customer_Name: `Guest ${mobileNumber.slice(-4)}`,
+        Mobile_Number: mobileNumber,
+        Email: `guest_${mobileNumber}@treattaste.com`,
+        Created_At: new Date().toISOString(),
+      };
+      db.insertRow('Customers', customer);
     }
 
     const sessionId = generateSessionToken('cust');
     db.updateRow('Customers', 'Customer_ID', customer.Customer_ID, {
-      OTP_Session_ID: sessionId,
+      OTP_Session_ID: this.encodeSessionValue(sessionId, this.getCustomerSessionDurationMs()),
     });
 
     const session: CustomerSession = {
@@ -418,7 +465,56 @@ export class AuthService {
   }
 
   /**
-   * Validates a session token
+   * Updates Customer profile (Name & Email) with uniqueness validation
+   */
+  public static updateCustomerProfile(params: {
+    customerId: string;
+    customerName: string;
+    email: string;
+  }): { success: boolean; message: string; session?: Partial<CustomerSession> } {
+    const name = String(params.customerName || '').trim();
+    const email = String(params.email || '').trim().toLowerCase();
+
+    if (!name || name.length < 2) {
+      return { success: false, message: 'Customer name must be at least 2 characters.' };
+    }
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return { success: false, message: 'Please enter a valid email address.' };
+    }
+
+    const customer = db.findOne('Customers', (c) => c.Customer_ID === params.customerId);
+    if (!customer) {
+      return { success: false, message: 'Customer profile not found.' };
+    }
+
+    const duplicate = db.findOne(
+      'Customers',
+      (c) => c.Customer_ID !== params.customerId && String(c.Email || '').trim().toLowerCase() === email
+    );
+    if (duplicate) {
+      return { success: false, message: 'This email address is already registered to another customer.' };
+    }
+
+    db.updateRow('Customers', 'Customer_ID', params.customerId, {
+      Customer_Name: name,
+      Email: email,
+    });
+
+    return {
+      success: true,
+      message: 'Profile updated successfully.',
+      session: {
+        customerId: customer.Customer_ID,
+        customerName: name,
+        mobileNumber: customer.Mobile_Number,
+        email,
+        role: 'Customer',
+      },
+    };
+  }
+
+  /**
+   * Validates a session token and renews sliding expiry for trusted customer sessions
    */
   public static validateSession(sessionId: string): {
     isValid: boolean;
@@ -426,10 +522,27 @@ export class AuthService {
     user?: UserSession;
   } {
     if (!sessionId) return { isValid: false };
+    const targetHash = hashSessionToken(sessionId);
 
-    // Check Customers
-    const customer = db.findOne('Customers', (c) => c.OTP_Session_ID === sessionId);
+    // Check Customers using hashed token comparison
+    const customer = db.findOne('Customers', (c) => {
+      const parsed = this.parseCustomerSessionValue(c.OTP_Session_ID);
+      return parsed.tokenHash === targetHash || parsed.tokenHash === sessionId;
+    });
     if (customer) {
+      const parsed = this.parseCustomerSessionValue(customer.OTP_Session_ID);
+      if (parsed.expiresAt && Date.now() > parsed.expiresAt) {
+        db.updateRow('Customers', 'Customer_ID', customer.Customer_ID, {
+          OTP_Session_ID: '',
+        });
+        return { isValid: false };
+      }
+
+      // Sliding renewal on active trusted device
+      db.updateRow('Customers', 'Customer_ID', customer.Customer_ID, {
+        OTP_Session_ID: this.encodeSessionValue(sessionId, this.getCustomerSessionDurationMs()),
+      });
+
       return {
         isValid: true,
         customer: {
@@ -447,7 +560,7 @@ export class AuthService {
     const user = db.findOne('Users', (u) => {
       try {
         const list = JSON.parse(u.Active_Sessions_JSON || '[]');
-        return Array.isArray(list) && list.includes(sessionId);
+        return Array.isArray(list) && (list.includes(targetHash) || list.includes(sessionId));
       } catch {
         return false;
       }
@@ -474,9 +587,16 @@ export class AuthService {
    */
   public static logout(sessionId: string): boolean {
     if (!sessionId) return false;
+    const targetHash = hashSessionToken(sessionId);
 
     // Check Customer
-    const customer = db.findOne('Customers', (c) => c.OTP_Session_ID === sessionId);
+    const customer = db.findOne(
+      'Customers',
+      (c) => {
+        const parsed = this.parseCustomerSessionValue(c.OTP_Session_ID);
+        return parsed.tokenHash === targetHash || parsed.tokenHash === sessionId;
+      }
+    );
     if (customer) {
       db.updateRow('Customers', 'Customer_ID', customer.Customer_ID, {
         OTP_Session_ID: '',
@@ -488,7 +608,7 @@ export class AuthService {
     const user = db.findOne('Users', (u) => {
       try {
         const list = JSON.parse(u.Active_Sessions_JSON || '[]');
-        return Array.isArray(list) && list.includes(sessionId);
+        return Array.isArray(list) && (list.includes(targetHash) || list.includes(sessionId));
       } catch {
         return false;
       }
@@ -497,7 +617,7 @@ export class AuthService {
     if (user) {
       try {
         const list = JSON.parse(user.Active_Sessions_JSON || '[]');
-        const updated = list.filter((s: string) => s !== sessionId);
+        const updated = list.filter((s: string) => s !== targetHash && s !== sessionId);
         db.updateRow('Users', 'User_ID', user.User_ID, {
           Active_Sessions_JSON: JSON.stringify(updated),
         });

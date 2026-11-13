@@ -94,7 +94,7 @@ function setupAndSeedCompleteDatabase() {
       ["RESTAURANT_NAME", "Treat & Taste"],
       ["UPI_ID", "kesikam2006@oksbi"],
       ["UPI_PAYEE_NAME", "Kesika M"],
-      ["TAX_RATE_PERCENT", "5"],
+      ["TAX_RATE_PERCENT", ""], // Explicitly unconfigured pending owner confirmation
       ["MAX_STAFF_DISCOUNT_PERCENT", "10"],
       ["MAX_ADMIN_DISCOUNT_PERCENT", "50"],
       ["OPENING_TIME", "11:00"],

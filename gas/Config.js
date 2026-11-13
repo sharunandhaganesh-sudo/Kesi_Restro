@@ -11,7 +11,8 @@ var APP_CONFIG = {
   SPREADSHEET_ID: "1fdbI2ocFwJM3-RlYqegAWMRUEE0o2y-0Lh18HTOJ7Z8",
   
   // Restaurant operational parameters (Blueprint Section 10 & 20)
-  DEFAULT_TAX_RATE_PERCENT: 5,
+  // GST Tax rate is explicitly unconfigured until confirmed by the restaurant owner
+  DEFAULT_TAX_RATE_PERCENT: null,
   GRACE_PERIOD_MINUTES: 10,
   STAFF_VERIFICATION_MINUTES: 15,
   DINING_DURATION_MINUTES: 90,

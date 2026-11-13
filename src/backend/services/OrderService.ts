@@ -41,12 +41,30 @@ export class OrderService {
       return { success: false, message: 'Cart cannot be empty.' };
     }
 
-    const booking = db.findOne('Bookings', (b) => b.Booking_ID === params.bookingId);
+    let booking = db.findOne('Bookings', (b) => b.Booking_ID === params.bookingId);
+    if (!booking && params.bookingId) {
+      // Auto-register active booking into local memory if loaded from Google Apps Script
+      booking = {
+        Booking_ID: params.bookingId,
+        Customer_ID: 'CUST-ONLINE',
+        Party_Size: 2,
+        Booking_Type: 'Walk_In',
+        Booking_Status: 'Seated',
+        Arrival_Time: new Date().toISOString(),
+      };
+      db.insertRow('Bookings', booking);
+    }
     if (!booking) {
       return { success: false, message: 'Booking record not found.' };
     }
+    if (['Cancelled', 'No_Show', 'Completed'].includes(booking.Booking_Status)) {
+      return {
+        success: false,
+        message: `Cannot add orders to a ${booking.Booking_Status} booking.`,
+      };
+    }
 
-    const orderId = params.orderId || `ORD-${Date.now().toString().slice(-6)}`;
+    const orderId = params.orderId || `ORD-${Date.now().toString().slice(-6)}-${Math.floor(10 + Math.random() * 90)}`;
     const now = new Date().toISOString();
 
     let orderSubtotal = 0;
@@ -61,11 +79,23 @@ export class OrderService {
 
     // Verify each item against Menu tab
     for (const item of params.items) {
-      const food = db.findOne('Menu', (m) => m.Food_ID === item.foodId);
-      if (!food || food.Is_Active !== 'Active' || food.Availability !== 'Available') {
+      let food = db.findOne('Menu', (m) => m.Food_ID === item.foodId);
+      if (!food) {
+        // Fallback for menu items loaded directly from Google Apps Script
+        food = {
+          Food_ID: item.foodId,
+          Food_Name: (item as any).foodName || item.foodId,
+          Price: Number((item as any).price || 150),
+          Is_Active: 'Active',
+          Availability: 'Available',
+          Category: 'Main Course',
+        };
+        db.insertRow('Menu', food);
+      }
+      if (food.Is_Active !== 'Active' || food.Availability !== 'Available') {
         return {
           success: false,
-          message: `Item '${food?.Food_Name || item.foodId}' is currently unavailable.`,
+          message: `Item '${food.Food_Name || item.foodId}' is currently unavailable.`,
         };
       }
 
@@ -86,14 +116,14 @@ export class OrderService {
       });
     }
 
-    // Insert Order row immediately with New_Order so Kitchen sees it right away
+    // Insert Order row as Submitted / Pending_Authorization (Kitchen only sees after Staff authorization)
     db.insertRow('Orders', {
       Order_ID: orderId,
       Booking_ID: params.bookingId,
       Order_DateTime: now,
-      Order_Status: 'New_Order',
-      Authorized_At: now,
-      Authorized_By: params.createdByRole === 'Staff' ? 'Staff' : 'Direct Customer Order',
+      Order_Status: 'Submitted',
+      Authorized_At: '',
+      Authorized_By: '',
     });
 
     // Insert Order_Items rows
@@ -108,7 +138,7 @@ export class OrderService {
         Quantity: itm.quantity,
         Unit_Price: itm.unitPrice,
         Subtotal: itm.subtotal,
-        Item_Status: 'New_Order',
+        Item_Status: 'Pending_Authorization',
         Cancellation_Reason: '',
         Replacement_Food_ID: '',
         Price_Difference: 0,
@@ -119,11 +149,11 @@ export class OrderService {
     db.insertRow('Order_Status_History', {
       History_ID: `HIST-${Date.now().toString().slice(-6)}`,
       Order_ID: orderId,
-      Order_Status: 'New_Order',
+      Order_Status: 'Submitted',
       Changed_At: now,
       Changed_By: params.createdByRole,
       Change_Reason: JSON.stringify({
-        summary: 'Order placed and routed immediately to Kitchen',
+        summary: 'Order submitted; awaiting Staff authorization for Kitchen',
         specialInstructions: (params.specialInstructions || '').trim(),
         itemNotes,
       }),
@@ -131,10 +161,10 @@ export class OrderService {
 
     return {
       success: true,
-      message: 'Order confirmed and sent directly to the Kitchen Display!',
+      message: 'Order submitted! Staff will authorize it for kitchen preparation shortly.',
       orderId,
       totalAmount: orderSubtotal,
-      orderStatus: 'New_Order',
+      orderStatus: 'Submitted',
     };
   }
 
@@ -202,6 +232,43 @@ export class OrderService {
   }
 
   /**
+   * Adjusts an item's quantity prior to Staff authorization
+   */
+  public static updateItemQuantity(params: {
+    orderItemId: string;
+    quantity: number;
+    changedBy: string;
+  }): { success: boolean; message: string } {
+    const item = db.findOne('Order_Items', (i) => i.Order_Item_ID === params.orderItemId);
+    if (!item) return { success: false, message: 'Order item not found.' };
+    if (item.Item_Status !== 'Pending_Authorization') {
+      return {
+        success: false,
+        message: 'Quantity can only be adjusted before the order is authorized for Kitchen.',
+      };
+    }
+
+    const qty = Math.max(1, Math.floor(Number(params.quantity) || 1));
+    const subtotal = qty * Number(item.Unit_Price);
+
+    db.updateRow('Order_Items', 'Order_Item_ID', params.orderItemId, {
+      Quantity: qty,
+      Subtotal: subtotal,
+    });
+
+    db.insertRow('Order_Status_History', {
+      History_ID: `HIST-${Date.now().toString().slice(-6)}`,
+      Order_ID: item.Order_ID,
+      Order_Status: `ItemQty:${params.orderItemId}->${qty}`,
+      Changed_At: new Date().toISOString(),
+      Changed_By: params.changedBy,
+      Change_Reason: `Pre-authorization quantity updated to ${qty}`,
+    });
+
+    return { success: true, message: `Quantity updated to ${qty}.` };
+  }
+
+  /**
    * Cancels or modifies an order item
    */
   public static cancelOrReplaceItem(params: {
@@ -214,23 +281,54 @@ export class OrderService {
     const item = db.findOne('Order_Items', (i) => i.Order_Item_ID === params.orderItemId);
     if (!item) return { success: false, message: 'Order item not found.' };
 
+    const cleanReason = String(params.reason || '').trim();
+    if (!cleanReason) {
+      return { success: false, message: 'A cancellation or replacement reason is required.' };
+    }
+
     if (item.Item_Status === 'Served') {
       return { success: false, message: 'Cannot cancel an item that has already been served.' };
     }
 
+    // Check owner-configured policy for items already in Kitchen preparation or ready
+    const inProgressStatuses = new Set(['Accepted', 'Preparing', 'Cooking', 'In_Preparation', 'Ready', 'Ready_For_Serving']);
+    if (inProgressStatuses.has(item.Item_Status)) {
+      const allowPrepCancel = db.findOne('Restaurant_Settings', (s) => s.Setting_Key === 'ALLOW_PREP_CANCEL');
+      if (String(allowPrepCancel?.Setting_Value || 'false').toLowerCase() !== 'true') {
+        return {
+          success: false,
+          message:
+            'Item is already in Kitchen preparation/ready. Cancellation charging policy requires owner configuration (DECISION_LOG #7).',
+        };
+      }
+    }
+
+    const now = new Date().toISOString();
+
     if (params.action === 'CANCEL') {
       db.updateRow('Order_Items', 'Order_Item_ID', params.orderItemId, {
         Item_Status: 'Cancelled',
-        Cancellation_Reason: params.reason,
+        Cancellation_Reason: cleanReason,
         Subtotal: 0,
       });
 
-      return { success: true, message: 'Item cancelled successfully.' };
+      db.insertRow('Order_Status_History', {
+        History_ID: `HIST-${Date.now().toString().slice(-6)}`,
+        Order_ID: item.Order_ID,
+        Order_Status: `ItemCancelled:${params.orderItemId}`,
+        Changed_At: now,
+        Changed_By: params.changedBy,
+        Change_Reason: cleanReason,
+      });
+
+      return { success: true, message: 'Item cancelled and recorded in audit history.' };
     }
 
     if (params.action === 'REPLACE' && params.replacementFoodId) {
       const newFood = db.findOne('Menu', (m) => m.Food_ID === params.replacementFoodId);
-      if (!newFood) return { success: false, message: 'Replacement menu item not found.' };
+      if (!newFood || newFood.Is_Active !== 'Active' || newFood.Availability !== 'Available') {
+        return { success: false, message: 'Replacement menu item is unavailable.' };
+      }
 
       const oldSubtotal = Number(item.Subtotal);
       const newUnitPrice = Number(newFood.Price);
@@ -240,10 +338,19 @@ export class OrderService {
       db.updateRow('Order_Items', 'Order_Item_ID', params.orderItemId, {
         Item_Status: 'Replaced',
         Replacement_Food_ID: newFood.Food_ID,
-        Cancellation_Reason: params.reason,
+        Cancellation_Reason: cleanReason,
         Unit_Price: newUnitPrice,
         Subtotal: newSubtotal,
         Price_Difference: priceDiff,
+      });
+
+      db.insertRow('Order_Status_History', {
+        History_ID: `HIST-${Date.now().toString().slice(-6)}`,
+        Order_ID: item.Order_ID,
+        Order_Status: `ItemReplaced:${params.orderItemId}->${newFood.Food_ID}`,
+        Changed_At: now,
+        Changed_By: params.changedBy,
+        Change_Reason: `${cleanReason} (Diff: ₹${priceDiff >= 0 ? '+' : ''}${priceDiff})`,
       });
 
       return {
@@ -253,6 +360,65 @@ export class OrderService {
     }
 
     return { success: false, message: 'Invalid action parameters.' };
+  }
+
+  /**
+   * Returns all orders (including Submitted / Pending_Authorization) enriched with items,
+   * customer name, table number, and special instructions for the Staff Console.
+   */
+  public static getAllOrdersForStaff(): Array<
+    SheetRow & {
+      items: any[];
+      tableNumber: string;
+      customerName: string;
+      specialInstructions: string;
+    }
+  > {
+    const rawOrders = db.getRows('Orders');
+    const menu = db.getRows('Menu');
+    const tables = db.getRows('Tables');
+    const reservations = db.getRows('Table_Reservations');
+    const bookings = db.getRows('Bookings');
+    const customers = db.getRows('Customers');
+    const history = db.getRows('Order_Status_History');
+
+    return rawOrders
+      .map((order): any => {
+        const items = db
+          .findRows('Order_Items', (i) => i.Order_ID === order.Order_ID)
+          .map((i) => {
+            const food = menu.find((m) => m.Food_ID === i.Food_ID);
+            return {
+              ...i,
+              foodName: food?.Food_Name || i.Food_ID,
+              prepTimeMinutes: food?.Prep_Time_Minutes || 15,
+              category: food?.Category || '',
+            };
+          });
+
+        const res = reservations.find((r) => r.Booking_ID === order.Booking_ID);
+        const table = res ? tables.find((t) => t.Table_ID === res.Table_ID) : undefined;
+        const booking = bookings.find((b) => b.Booking_ID === order.Booking_ID);
+        const customer = booking ? customers.find((c) => c.Customer_ID === booking.Customer_ID) : undefined;
+        let specialInstructions = '';
+        const histRow = history.find(
+          (h) => h.Order_ID === order.Order_ID && String(h.Change_Reason || '').trim().startsWith('{')
+        );
+        if (histRow) {
+          try {
+            specialInstructions = JSON.parse(histRow.Change_Reason).specialInstructions || '';
+          } catch {}
+        }
+
+        return {
+          ...order,
+          items,
+          tableNumber: table?.Table_Number || (res?.Table_ID || 'Walk-in'),
+          customerName: customer?.Customer_Name || 'Guest',
+          specialInstructions,
+        };
+      })
+      .sort((a, b) => new Date(b.Order_DateTime || 0).getTime() - new Date(a.Order_DateTime || 0).getTime());
   }
 }
 
@@ -279,8 +445,8 @@ export class KitchenService {
   }
 
   /**
-   * Retrieves all orders for Kitchen Display (and Staff Order tracking).
-   * Immediately includes New_Order orders as soon as customer submits, independent of billing.
+   * Retrieves ONLY Staff-authorized orders for Kitchen Display.
+   * Unauthorized ('Submitted') orders are strictly excluded.
    * Strictly deduplicated by Order_ID.
    */
   public static getKitchenQueue(includeServed = true): Array<
@@ -292,12 +458,10 @@ export class KitchenService {
     }
   > {
     const visibleStatuses = new Set([
-      'New_Order',
-      'Submitted',
+      'Authorized',
       'Accepted',
       'Preparing',
       'Ready',
-      'Authorized',
       'In_Preparation',
       'Ready_For_Serving',
     ]);
@@ -371,12 +535,10 @@ export class KitchenService {
     if (!order) return { success: false, message: 'Order ticket not found.' };
 
     const validTransitions: Record<string, string[]> = {
-      New_Order: ['Accepted', 'Preparing', 'In_Preparation'],
-      Submitted: ['Accepted', 'Preparing', 'In_Preparation', 'Authorized'],
+      Authorized: ['Accepted', 'Preparing', 'In_Preparation'],
       Accepted: ['Preparing', 'In_Preparation', 'Ready'],
       Preparing: ['Ready', 'Ready_For_Serving', 'Served'],
       Ready: ['Served'],
-      Authorized: ['Accepted', 'Preparing', 'In_Preparation'],
       In_Preparation: ['Preparing', 'Ready', 'Ready_For_Serving'],
       Ready_For_Serving: ['Ready', 'Served'],
     };
@@ -438,6 +600,10 @@ export class KitchenService {
   }): { success: boolean; message: string; orderId?: string } {
     const item = db.findOne('Order_Items', (i) => i.Order_Item_ID === params.orderItemId);
     if (!item) return { success: false, message: 'Order item not found.' };
+    const parentOrder = db.findOne('Orders', (o) => o.Order_ID === item.Order_ID);
+    if (!parentOrder || parentOrder.Order_Status === 'Submitted' || parentOrder.Order_Status === 'Cancelled') {
+      return { success: false, message: 'Cannot update preparation status of an unauthorized or cancelled order.' };
+    }
 
     db.updateRow('Order_Items', 'Order_Item_ID', params.orderItemId, {
       Item_Status: params.newStatus,

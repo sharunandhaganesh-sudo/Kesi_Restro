@@ -16,6 +16,7 @@ import { RequestDispatcher } from '../../backend/dispatcher';
 import { UserSessionState } from '../types';
 import { BrandLogo } from '../components/BrandLogo';
 import { BRAND_CONFIG } from '../../config/branding';
+import { notificationHub } from '../services/notificationHub';
 import {
   ChefHat,
   Clock,
@@ -102,8 +103,33 @@ export const KitchenWebsite: React.FC<KitchenWebsiteProps> = ({
           });
         }
       }
-      setKitchenOrders(Array.from(uniqueMap.values()));
+      const orderList = Array.from(uniqueMap.values());
+      setKitchenOrders(orderList);
       setLastSyncedAt(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+
+      // Detect newly arriving kitchen orders
+      for (const ticket of orderList) {
+        if (ticket.Order_Status !== 'Served' && ticket.Order_Status !== 'Cancelled') {
+          const pollKey = `order_${ticket.Order_ID}`;
+          if (!notificationHub.hasSeen(pollKey)) {
+            notificationHub.publish({
+              id: pollKey,
+              type: 'NEW_ORDER',
+              title: `New Kitchen Order: Table #${ticket.Table_Number || 'TBD'}`,
+              message: `Order #${ticket.Order_ID} for ${ticket.Customer_Name || 'Guest'}: ${ticket.items?.map((i: any) => `${i.quantity || i.Quantity}x ${i.name || i.Food_Name}`).join(', ') || 'Items ordered'}${ticket.Special_Instructions ? ` | Note: ${ticket.Special_Instructions}` : ''}`,
+              timestamp: Date.now(),
+              priority: 'high',
+              metadata: {
+                orderId: ticket.Order_ID,
+                tableNumber: ticket.Table_Number,
+                customerName: ticket.Customer_Name,
+              },
+              actionLabel: 'View Order',
+              autoDismissMs: 8000,
+            });
+          }
+        }
+      }
     } else if (!res.success) {
       setLoadError(res.error?.message || 'Unable to sync live kitchen orders from server.');
     }

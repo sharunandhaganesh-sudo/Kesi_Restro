@@ -10,9 +10,18 @@ export interface UserSessionState {
   userId?: string;
   customerId?: string;
   name: string;
+  customerName?: string;
   email: string;
   mobile?: string;
+  mobileNumber?: string;
   role: 'Customer' | 'Staff' | 'Kitchen' | 'Admin';
+  user?: {
+    userId?: string;
+    userName?: string;
+    email?: string;
+    mobileNumber?: string;
+    role?: string;
+  };
 }
 
 export interface MenuItem {

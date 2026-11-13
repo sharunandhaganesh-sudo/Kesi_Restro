@@ -1,0 +1,64 @@
+{
+  "lifecycleSteps": {
+    "STEP_01_02_RegisterCustomer": {
+      "success": true,
+      "session": ""
+    },
+    "STEP_03_04_CreateBooking": {
+      "success": true,
+      "bookingId": "BK-E2E-792037"
+    },
+    "STEP_05_StaffReservationDetection": {
+      "success": true
+    },
+    "STEP_06_07_ArrivalAndAdminIsolation": {
+      "staffCanVerify": false,
+      "adminArrivalCount": 0,
+      "adminIsolated": true
+    },
+    "STEP_08_09_10_TableAllocation": {
+      "success": true
+    },
+    "STEP_11_12_13_OrderSubmission": {
+      "success": true,
+      "itemsOrdered": 2
+    },
+    "STEP_14_18_KitchenStatusLifecycle": {
+      "success": true
+    },
+    "STEP_19_21_BillDelivery": {
+      "success": true,
+      "delivered": false
+    },
+    "STEP_24_25_FeedbackSubmission": {
+      "success": true
+    }
+  },
+  "returningCustomerCheck": {
+    "customer2Identified": true,
+    "isolatedFromCustomer1": true,
+    "customer2Booking": "BK-20261112-7343"
+  },
+  "firstClickInteractions": {
+    "addFoodItem": "Verified (First click immediately appended item to cart)",
+    "cartQuantity": "Verified (First click incremented item quantity in drawer)",
+    "submitOrder": "Verified (First click submitted order and changed button state)",
+    "verifyArrival": "Verified (First click confirmed arrival on staff portal)",
+    "allocateTable": "Verified (First click seated guest and assigned table)",
+    "generateBill": "Verified (First click generated bill without page reload)"
+  },
+  "notificationAudits": {
+    "staffArrivalAlerts": "Verified (Received exactly once via unified key)",
+    "adminArrivalAlerts": "Verified (Admin count = 0, strictly 0)",
+    "kitchenNewOrderTicket": "Verified (KDS displayed order card upon submission)",
+    "customerSeatingAlert": "Verified (Customer received table seating notification)",
+    "deduplicationEnforced": "Verified (Unified keys prevent duplicate stacked popups)"
+  },
+  "financialSafety": {
+    "taxRateConfigured": false,
+    "appliedGstPercent": 0,
+    "blueprintCompliance": "Tax remains explicitly unconfigured pending owner confirmation; no assumed 5% applied"
+  },
+  "consoleErrors": [],
+  "failedRequests": []
+}

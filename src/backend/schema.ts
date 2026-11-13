@@ -227,29 +227,18 @@ export function verifySchemaIntegrity(
     }
   }
 
+  // Detect unexpected extra tabs beyond the 12 approved tabs
+  for (const actualSheetName of Object.keys(sheetHeaders)) {
+    if (!DATABASE_SCHEMA[actualSheetName]) {
+      errors.push(`Unexpected extra sheet: ${actualSheetName}`);
+    }
+  }
+
   return {
     isValid: errors.length === 0,
     errors,
   };
 }
-
-export const FEEDBACK_SHEET_DEFINITION: SheetDefinition = {
-  name: 'Feedback',
-  columns: [
-    'Feedback_ID',
-    'Order_ID',
-    'Booking_ID',
-    'Customer_ID',
-    'Customer_Name',
-    'Overall_Rating',
-    'Food_Quality_Rating',
-    'Service_Rating',
-    'Cleanliness_Rating',
-    'Comments',
-    'Submitted_At',
-  ] as const,
-  description: 'Dedicated multi-dimensional customer feedback linked to Order_ID and Customer_ID (11 columns)',
-};
 
 export const TOTAL_COLUMNS_COUNT = Object.values(DATABASE_SCHEMA).reduce(
   (sum, s) => sum + s.columns.length,

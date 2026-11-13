@@ -26,23 +26,23 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
 }) => {
   const iconDimensions = {
     sm: 'w-8 h-8',
-    md: 'w-10 h-10',
-    lg: 'w-14 h-14',
-    xl: 'w-20 h-20',
+    md: 'w-8 h-8 sm:w-10 sm:h-10',
+    lg: 'w-10 h-10 sm:w-14 sm:h-14',
+    xl: 'w-14 h-14 sm:w-20 sm:h-20',
   }[size];
 
   const titleSizes = {
-    sm: 'text-sm font-bold tracking-tight',
-    md: 'text-base sm:text-lg font-extrabold tracking-tight',
-    lg: 'text-xl sm:text-2xl font-extrabold tracking-tight',
-    xl: 'text-2xl sm:text-3xl font-extrabold tracking-tight',
+    sm: 'text-xs sm:text-sm font-bold tracking-tight',
+    md: 'text-sm sm:text-base lg:text-lg font-extrabold tracking-tight',
+    lg: 'text-lg sm:text-xl lg:text-2xl font-extrabold tracking-tight',
+    xl: 'text-xl sm:text-2xl lg:text-3xl font-extrabold tracking-tight',
   }[size];
 
   const subtitleSizes = {
-    sm: 'text-[9px] tracking-widest',
-    md: 'text-[10px] tracking-widest',
-    lg: 'text-xs tracking-widest',
-    xl: 'text-sm tracking-widest',
+    sm: 'text-[8px] sm:text-[9px] tracking-widest',
+    md: 'text-[8px] sm:text-[10px] tracking-widest',
+    lg: 'text-[10px] sm:text-xs tracking-widest',
+    xl: 'text-xs sm:text-sm tracking-widest',
   }[size];
 
   const titleColor = light ? 'text-[#FFF9F0]' : 'text-[#3B1A08]';

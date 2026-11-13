@@ -24,6 +24,7 @@ import { FeedbackService } from './services/FeedbackService';
 import { GasAdapter } from './gasAdapter';
 import { db } from './mockDb';
 import { verifySchemaIntegrity, TOTAL_COLUMNS_COUNT } from './schema';
+import { notificationHub } from '../frontend/services/notificationHub';
 
 export interface BackendRequest<T = any> {
   action: string;
@@ -85,14 +86,16 @@ export class RequestDispatcher {
               const gasVerify = await GasAdapter.execute('verifyCustomerOTP', {
                 mobileNumber: payload.mobileNumber,
                 otp: payload.otp,
+                customerName: payload.customerName,
+                email: payload.email,
               });
               if (gasVerify.success && gasVerify.data?.sessionId) {
                 const syncedSession = AuthService.syncCustomerSessionFromGas({
                   sessionId: gasVerify.data.sessionId,
                   customerId: gasVerify.data.customerId || gasVerify.data.user?.userId || `CUST-${Date.now().toString().slice(-6)}`,
-                  customerName: gasVerify.data.customerName || gasVerify.data.user?.userName || 'Guest',
+                  customerName: gasVerify.data.customerName || gasVerify.data.user?.userName || payload.customerName || 'Valued Guest',
                   mobileNumber: payload.mobileNumber,
-                  email: gasVerify.data.email || gasVerify.data.user?.email || '',
+                  email: gasVerify.data.email || gasVerify.data.user?.email || payload.email || '',
                 });
                 return {
                   success: true,
@@ -138,6 +141,75 @@ export class RequestDispatcher {
             success: true,
             data: res.session,
             message: res.message,
+          };
+        }
+
+        case 'validateSession': {
+          const targetSessionId = String(payload.sessionId || sessionId || '').trim();
+          if (!targetSessionId) {
+            return { success: false, error: { code: 'SESSION_EXPIRED', message: 'No session token provided.' } };
+          }
+          const localCheck = AuthService.validateSession(targetSessionId);
+          if (localCheck.isValid) {
+            const rawSession = (localCheck.customer || localCheck.user) as any;
+            const cId = rawSession?.customerId || rawSession?.userId || '';
+            const cName = rawSession?.customerName || rawSession?.userName || 'Valued Guest';
+            const cRole = rawSession?.role || 'Customer';
+            const cMobile = rawSession?.mobileNumber || '';
+            const cEmail = rawSession?.email || '';
+
+            return {
+              success: true,
+              data: {
+                sessionId: targetSessionId,
+                customerId: cId,
+                customerName: cName,
+                role: cRole,
+                mobileNumber: cMobile,
+                email: cEmail,
+                user: {
+                  userId: cId,
+                  userName: cName,
+                  role: cRole,
+                  mobileNumber: cMobile,
+                  email: cEmail,
+                },
+              },
+              message: 'Trusted session restored.',
+            };
+          }
+          if (typeof window !== 'undefined') {
+            const liveCheck = await GasAdapter.execute('validateSession', { sessionId: targetSessionId });
+            if (liveCheck.success && liveCheck.data?.sessionId) {
+              if (liveCheck.data.role === 'Customer') {
+                const synced = AuthService.syncCustomerSessionFromGas({
+                  sessionId: liveCheck.data.sessionId,
+                  customerId: liveCheck.data.customerId,
+                  customerName: liveCheck.data.customerName,
+                  mobileNumber: liveCheck.data.mobileNumber,
+                  email: liveCheck.data.email,
+                });
+                return { success: true, data: synced, message: 'Trusted customer session restored.' };
+              }
+              return { success: true, data: liveCheck.data, message: 'Session restored.' };
+            }
+          }
+          return {
+            success: false,
+            error: { code: 'SESSION_EXPIRED', message: 'Session expired or revoked. Please sign in again.' },
+          };
+        }
+
+        case 'logout': {
+          const targetSessionId = String(payload.sessionId || sessionId || '').trim();
+          const revoked = AuthService.logout(targetSessionId);
+          if (typeof window !== 'undefined' && targetSessionId) {
+            await GasAdapter.execute('logout', { sessionId: targetSessionId }).catch(() => {});
+          }
+          return {
+            success: true,
+            data: { revoked },
+            message: 'Logged out and session revoked.',
           };
         }
 
@@ -217,6 +289,10 @@ export class RequestDispatcher {
 
         switch (action) {
           case 'createBooking': {
+            const customerName = payload.customerName || sessionCheck.customer?.customerName || actorName;
+            const customerMobile = payload.customerMobile || sessionCheck.customer?.mobileNumber || '';
+            const email = payload.email || sessionCheck.customer?.email || '';
+
             const res = BookingService.createBooking({
               customerId,
               visitType: payload.visitType,
@@ -228,6 +304,9 @@ export class RequestDispatcher {
               await GasAdapter.execute('createBooking', {
                 bookingId: res.booking?.Booking_ID,
                 customerId,
+                customerName,
+                customerMobile,
+                email,
                 visitType: payload.visitType,
                 partySize: Number(payload.partySize),
                 reservationDate: payload.reservationDate,
@@ -235,6 +314,26 @@ export class RequestDispatcher {
                 tableId: payload.tableId,
               }).catch(() => {});
             }
+
+            if (res.success && res.booking?.Booking_ID) {
+              notificationHub.publish({
+                id: `res_${res.booking.Booking_ID}`,
+                type: 'NEW_RESERVATION',
+                title: 'NEW RESERVATION RECEIVED',
+                message: `Reservation received for ${customerName} (Party of ${payload.partySize}) on ${payload.reservationDate || 'today'} at ${payload.reservationTime || '19:30'}.`,
+                priority: 'normal',
+                timestamp: new Date().toISOString(),
+                metadata: {
+                  bookingId: res.booking.Booking_ID,
+                  customerName,
+                  partySize: Number(payload.partySize),
+                  date: payload.reservationDate,
+                  time: payload.reservationTime,
+                },
+                actionLabel: 'View Booking',
+              });
+            }
+
             return res.success
               ? { success: true, data: res.booking, message: res.message }
               : { success: false, error: { code: 'BOOKING_FAILED', message: res.message } };
@@ -247,6 +346,12 @@ export class RequestDispatcher {
               reservationDateTime: payload.reservationDateTime,
               partySize: Number(payload.partySize),
             });
+            if (res.success && typeof window !== 'undefined' && payload.tableId) {
+              await GasAdapter.execute('allocateTable', {
+                bookingId: payload.bookingId,
+                tableId: payload.tableId,
+              }).catch(() => {});
+            }
             return res.success
               ? { success: true, data: res, message: res.message }
               : { success: false, error: { code: 'RESERVATION_FAILED', message: res.message } };
@@ -259,48 +364,151 @@ export class RequestDispatcher {
               : { success: false, error: { code: 'QUEUE_FAILED', message: res.message } };
           }
 
+          case 'updateCustomerProfile': {
+            const res = AuthService.updateCustomerProfile({
+              customerId,
+              customerName: payload.customerName,
+              email: payload.email,
+            });
+            if (!res.success) {
+              return { success: false, error: { code: 'PROFILE_UPDATE_FAILED', message: res.message } };
+            }
+            if (typeof window !== 'undefined') {
+              const liveRes = await GasAdapter.execute('updateCustomerProfile', {
+                customerId,
+                customerName: payload.customerName,
+                email: payload.email,
+              });
+              if (!liveRes.success && liveRes.error?.code && liveRes.error.code !== 'GAS_CONNECTION_ERROR' && liveRes.error.code !== 'UNKNOWN_ACTION') {
+                return { success: false, error: liveRes.error };
+              }
+            }
+            return { success: true, data: res.session, message: res.message };
+          }
+
           case 'confirmArrival': {
-            const res = ReservationService.customerConfirmArrival(payload.bookingId);
+            const reqBId = String(payload.bookingId || '').trim().toUpperCase();
+            if (typeof window !== 'undefined') {
+              const liveArrival = await GasAdapter.execute('confirmArrival', {
+                bookingId: reqBId,
+                customerId,
+              }, sessionId);
+              if (liveArrival.success) {
+                ReservationService.customerConfirmArrival(reqBId, customerId);
+                notificationHub.publish({
+                  id: `arrival_${reqBId}`,
+                  type: 'ARRIVAL_REGISTERED',
+                  title: 'CUSTOMER ARRIVAL — ACTION REQUIRED',
+                  message: `Guest ${actorName} has arrived at the host desk for Booking ${reqBId}.`,
+                  priority: 'critical',
+                  timestamp: new Date().toISOString(),
+                  metadata: {
+                    bookingId: reqBId,
+                    customerName: actorName,
+                  },
+                  actionLabel: 'Verify Arrival',
+                });
+                return {
+                  success: true,
+                  message: liveArrival.message || 'Arrival confirmed! Staff has been notified for verification.',
+                };
+              }
+              if (liveArrival.error?.code && liveArrival.error.code !== 'GAS_CONNECTION_ERROR' && liveArrival.error.code !== 'UNKNOWN_ACTION') {
+                return {
+                  success: false,
+                  error: {
+                    code: liveArrival.error.code || 'ARRIVAL_FAILED',
+                    message: liveArrival.error.message || liveArrival.message || 'Unable to confirm arrival.',
+                  },
+                };
+              }
+            }
+            const res = ReservationService.customerConfirmArrival(reqBId, customerId);
+            if (res.success) {
+              notificationHub.publish({
+                id: `arrival_${reqBId}`,
+                type: 'ARRIVAL_REGISTERED',
+                title: 'CUSTOMER ARRIVAL — ACTION REQUIRED',
+                message: `Guest ${actorName} has arrived at the host desk for Booking ${reqBId}.`,
+                priority: 'critical',
+                timestamp: new Date().toISOString(),
+                metadata: {
+                  bookingId: reqBId,
+                  customerName: actorName,
+                },
+                actionLabel: 'Verify Arrival',
+              });
+            }
             return res.success
               ? { success: true, message: res.message }
               : { success: false, error: { code: 'ARRIVAL_FAILED', message: res.message } };
           }
 
           case 'placeOrder': {
-            const res = OrderService.createOrder({
-              bookingId: payload.bookingId,
-              items: payload.items,
-              specialInstructions: payload.specialInstructions,
-              createdByRole: 'Customer',
-            });
-            if (!res.success) {
-              return { success: false, error: { code: 'ORDER_FAILED', message: res.message } };
-            }
-
+            let gasOrderId: string | undefined;
             if (typeof window !== 'undefined') {
               const gasOrderRes = await GasAdapter.execute('placeOrder', {
-                orderId: res.orderId,
                 bookingId: payload.bookingId,
                 items: payload.items,
                 specialInstructions: payload.specialInstructions,
-              });
-              if (
+              }, sessionId);
+              const liveGasOrderId = gasOrderRes.data?.orderId || (gasOrderRes as any).orderId;
+              if (gasOrderRes.success && liveGasOrderId) {
+                gasOrderId = liveGasOrderId;
+              } else if (
                 !gasOrderRes.success &&
-                gasOrderRes.error?.code !== 'GAS_CONNECTION_ERROR' &&
-                gasOrderRes.error?.code !== 'UNKNOWN_ACTION'
+                gasOrderRes.error?.code &&
+                gasOrderRes.error.code !== 'GAS_CONNECTION_ERROR' &&
+                gasOrderRes.error.code !== 'UNKNOWN_ACTION'
               ) {
                 return {
                   success: false,
                   error: {
-                    code: 'ORDER_PERSIST_FAILED',
-                    message: gasOrderRes.error?.message || 'Unable to save order to backend.',
+                    code: gasOrderRes.error.code || 'ORDER_PERSIST_FAILED',
+                    message: gasOrderRes.error.message || gasOrderRes.message || 'Unable to save order to backend.',
                   },
                 };
               }
             }
 
+            const res = OrderService.createOrder({
+              orderId: gasOrderId,
+              bookingId: payload.bookingId,
+              items: payload.items,
+              specialInstructions: payload.specialInstructions,
+              createdByRole: 'Customer',
+            });
+            if (!res.success && !gasOrderId) {
+              return { success: false, error: { code: 'ORDER_FAILED', message: res.message } };
+            }
+
+            const finalOrderId = gasOrderId || res.orderId;
             await CartService.clearDraftCart(customerId);
-            return { success: true, data: res, message: res.message };
+            if (finalOrderId) {
+              notificationHub.publish({
+                id: `order_${finalOrderId}`,
+                type: 'NEW_ORDER',
+                title: 'NEW ORDER RECEIVED',
+                message: `New order ${finalOrderId} submitted for booking ${payload.bookingId}.`,
+                priority: 'high',
+                timestamp: new Date().toISOString(),
+                metadata: {
+                  orderId: finalOrderId,
+                  bookingId: payload.bookingId,
+                },
+                actionLabel: 'View Order',
+              });
+            }
+            return {
+              success: true,
+              data: {
+                orderId: finalOrderId,
+                bookingId: payload.bookingId,
+                items: payload.items,
+                totalAmount: res.totalAmount || 0,
+              },
+              message: 'Order submitted to kitchen successfully!',
+            };
           }
 
           case 'saveDraftCart': {
@@ -319,28 +527,65 @@ export class RequestDispatcher {
           }
 
           case 'getBookingDetails': {
-            const localDetails = BookingService.getBookingDetails(payload.bookingId);
-            if (localDetails && localDetails.booking.Customer_ID !== customerId) {
-              return { success: false, error: { code: 'FORBIDDEN', message: 'Access denied.' } };
-            }
+            const reqBId = String(payload.bookingId || '').trim().toUpperCase();
+            const sessionCustId = String(customerId || '').trim().toUpperCase();
+
             if (typeof window !== 'undefined') {
-              const liveDetails = await GasAdapter.execute('getBookingDetails', { bookingId: payload.bookingId });
+              const liveDetails = await GasAdapter.execute('getBookingDetails', { bookingId: reqBId });
               if (liveDetails.success && liveDetails.data?.booking) {
-                if (liveDetails.data.booking.Customer_ID !== customerId) {
-                  return { success: false, error: { code: 'FORBIDDEN', message: 'Access denied.' } };
+                const bCustId = String(liveDetails.data.booking.Customer_ID || '').trim().toUpperCase();
+                if (bCustId && sessionCustId && bCustId !== sessionCustId) {
+                  const bCust = db.findOne('Customers', (c) => c.Customer_ID.toUpperCase() === bCustId);
+                  const isMobileMatch = Boolean(bCust && sessionCheck.customer?.mobileNumber && bCust.Mobile_Number === sessionCheck.customer.mobileNumber);
+                  if (!isMobileMatch) {
+                    return { success: false, error: { code: 'FORBIDDEN', message: 'Access denied: You can only view your own booking details.' } };
+                  }
                 }
                 return { success: true, data: liveDetails.data };
               }
             }
-            if (!localDetails) {
-              return { success: false, error: { code: 'NOT_FOUND', message: 'Booking not found.' } };
+
+            const localDetails = BookingService.getBookingDetails(reqBId);
+            if (localDetails) {
+              const bCustId = String(localDetails.booking.Customer_ID || '').trim().toUpperCase();
+              if (bCustId && sessionCustId && bCustId !== sessionCustId) {
+                const bCust = db.findOne('Customers', (c) => c.Customer_ID.toUpperCase() === bCustId);
+                const isMobileMatch = Boolean(bCust && sessionCheck.customer?.mobileNumber && bCust.Mobile_Number === sessionCheck.customer.mobileNumber);
+                if (!isMobileMatch) {
+                  return { success: false, error: { code: 'FORBIDDEN', message: 'Access denied: You can only view your own booking details.' } };
+                }
+              }
+              return { success: true, data: localDetails };
             }
-            return { success: true, data: localDetails };
+
+            return { success: false, error: { code: 'NOT_FOUND', message: `Booking ID '${payload.bookingId}' not found.` } };
           }
 
           case 'getCustomerHistory': {
-            const history = BookingService.getCustomerBookings(customerId);
-            return { success: true, data: history };
+            const custMobile = sessionCheck.customer?.mobileNumber;
+            if (typeof window !== 'undefined') {
+              const liveHist = await GasAdapter.execute('getCustomerHistory', {
+                customerId,
+                userId: customerId,
+                mobileNumber: custMobile,
+              });
+              if (liveHist.success && Array.isArray(liveHist.data) && liveHist.data.length > 0) {
+                return { success: true, data: liveHist.data };
+              }
+            }
+            const bookings = BookingService.getCustomerBookings(customerId);
+            const enriched = bookings.map((b) => {
+              const details = BookingService.getBookingDetails(b.Booking_ID);
+              return {
+                ...b,
+                orders: details?.orders || [],
+                orderItems: details?.orderItems || [],
+                bill: details?.bill || null,
+                payment: details?.payment || null,
+                reservations: details?.reservations || [],
+              };
+            });
+            return { success: true, data: enriched };
           }
 
           case 'getCustomerFeedbacks': {
@@ -462,13 +707,18 @@ export class RequestDispatcher {
                 const enrichedBookings = liveBookings
                   .filter((b: any) => b.Booking_Status !== 'Cancelled')
                   .map((b: any) => {
-                    const cust = liveCustomers.find((c: any) => c.Customer_ID === b.Customer_ID);
-                    const res = liveRes.find((r: any) => r.Booking_ID === b.Booking_ID);
-                    const tbl = res ? liveTables.find((t: any) => t.Table_ID === res.Table_ID) : undefined;
+                    const bCustId = String(b.Customer_ID || '').trim().toUpperCase();
+                    let cust = liveCustomers.find((c: any) => String(c.Customer_ID || '').trim().toUpperCase() === bCustId);
+                    if (!cust && b.customerMobile) {
+                      cust = liveCustomers.find((c: any) => String(c.Mobile_Number || '').trim() === String(b.customerMobile).trim());
+                    }
+                    const bId = String(b.Booking_ID || '').trim().toUpperCase();
+                    const res = liveRes.find((r: any) => String(r.Booking_ID || '').trim().toUpperCase() === bId);
+                    const tbl = res ? liveTables.find((t: any) => String(t.Table_ID || '').trim().toUpperCase() === String(res.Table_ID || '').trim().toUpperCase()) : undefined;
                     return {
                       ...b,
-                      customerName: cust?.Customer_Name || 'Guest',
-                      customerMobile: cust?.Mobile_Number || '',
+                      customerName: cust?.Customer_Name || b.customerName || (cust?.Mobile_Number ? `Guest (${cust.Mobile_Number})` : 'Guest'),
+                      customerMobile: cust?.Mobile_Number || b.customerMobile || '',
                       tableNumber: tbl?.Table_Number,
                       tableId: tbl?.Table_ID,
                       graceDeadline: res?.Grace_Deadline,
@@ -476,13 +726,64 @@ export class RequestDispatcher {
                     };
                   });
 
+                // Compute dynamic table status from live data
+                const enrichedTables = liveTables.map((t: any) => {
+                  const tId = String(t.Table_ID || '').trim().toUpperCase();
+                  if (t.Table_Status === 'Unavailable') {
+                    return { ...t, dynamicState: 'Unavailable' };
+                  }
+
+                  // Find if table is occupied or seated
+                  const seatedBooking = enrichedBookings.find((b: any) => {
+                    if (b.Booking_Status !== 'Seated') return false;
+                    return String(b.tableId || '').trim().toUpperCase() === tId;
+                  });
+
+                  if (t.Table_Status === 'Occupied' || seatedBooking) {
+                    return {
+                      ...t,
+                      dynamicState: 'Occupied',
+                      activeBookingId: seatedBooking?.Booking_ID,
+                      seatedCustomerName: seatedBooking?.customerName,
+                    };
+                  }
+
+                  // Check if protected by upcoming reservation (105-minute window)
+                  const blockingWindowMs = 105 * 60 * 1000;
+                  const now = Date.now();
+                  const upcoming = liveRes.find((r: any) => {
+                    if (String(r.Table_ID || '').trim().toUpperCase() !== tId) return false;
+                    if (r.Reservation_Status !== 'Active') return false;
+                    const resTime = new Date(r.Reservation_DateTime).getTime();
+                    return !isNaN(resTime) && Math.abs(resTime - now) <= blockingWindowMs;
+                  });
+
+                  if (upcoming) {
+                    const upBooking = enrichedBookings.find((b: any) => String(b.Booking_ID || '').trim().toUpperCase() === String(upcoming.Booking_ID || '').trim().toUpperCase());
+                    return {
+                      ...t,
+                      dynamicState: 'Reserved_Upcoming',
+                      activeBookingId: upcoming.Booking_ID,
+                      reservedCustomerName: upBooking?.customerName,
+                      reservationTime: upBooking?.Reservation_Time,
+                    };
+                  }
+
+                  return {
+                    ...t,
+                    dynamicState: 'Available',
+                  };
+                });
+
                 const enrichedOrders = liveOrders.map((order: any) => {
-                  const bk = liveBookings.find((b: any) => b.Booking_ID === order.Booking_ID);
-                  const cust = bk ? liveCustomers.find((c: any) => c.Customer_ID === bk.Customer_ID) : undefined;
-                  const res = liveRes.find((r: any) => r.Booking_ID === order.Booking_ID);
-                  const tbl = res ? liveTables.find((t: any) => t.Table_ID === res.Table_ID) : undefined;
+                  const bId = String(order.Booking_ID || '').trim().toUpperCase();
+                  const bk = liveBookings.find((b: any) => String(b.Booking_ID || '').trim().toUpperCase() === bId);
+                  const bCustId = bk ? String(bk.Customer_ID || '').trim().toUpperCase() : '';
+                  const cust = bCustId ? liveCustomers.find((c: any) => String(c.Customer_ID || '').trim().toUpperCase() === bCustId) : undefined;
+                  const res = liveRes.find((r: any) => String(r.Booking_ID || '').trim().toUpperCase() === bId);
+                  const tbl = res ? liveTables.find((t: any) => String(t.Table_ID || '').trim().toUpperCase() === String(res.Table_ID || '').trim().toUpperCase()) : undefined;
                   const items = liveItems
-                    .filter((i: any) => i.Order_ID === order.Order_ID)
+                    .filter((i: any) => String(i.Order_ID || '').trim().toUpperCase() === String(order.Order_ID || '').trim().toUpperCase())
                     .map((i: any) => {
                       const food = liveMenu.find((m: any) => m.Food_ID === i.Food_ID);
                       return { ...i, foodName: food?.Food_Name || i.Food_ID };
@@ -498,7 +799,7 @@ export class RequestDispatcher {
                   }
                   return {
                     ...order,
-                    customerName: cust?.Customer_Name || 'Guest',
+                    customerName: cust?.Customer_Name || bk?.customerName || 'Guest',
                     tableNumber: tbl?.Table_Number || (res?.Table_ID || 'Walk-in'),
                     specialInstructions,
                     items,
@@ -508,7 +809,7 @@ export class RequestDispatcher {
                 const queue = enrichedBookings.filter((b: any) => b.Queue_Status === 'Waiting' || b.Queue_Status === 'Called');
                 const pendingPayments = livePayments.filter((p: any) => p.Payment_Status === 'Pending_Verification');
                 const unverifiedArrivals = enrichedBookings.filter(
-                  (b: any) => b.Booking_Status === 'Arrived' && b.arrivalStatus !== 'Verified'
+                  (b: any) => b.Booking_Status === 'Arrived' && b.arrivalStatus !== 'Verified' && !String(b.Status_History_JSON || '').includes('ARRIVAL_VERIFIED')
                 );
 
                 return {
@@ -516,7 +817,7 @@ export class RequestDispatcher {
                   data: {
                     bookings: enrichedBookings,
                     queue,
-                    tables: liveTables,
+                    tables: enrichedTables,
                     pendingPayments,
                     allOrders: enrichedOrders,
                     unverifiedArrivals,
@@ -529,10 +830,9 @@ export class RequestDispatcher {
             const queue = QueueService.getActiveQueue();
             const tables = TableService.getAllTablesWithDynamicStatus();
             const pendingPayments = PaymentService.getPendingPayments();
-            const enrichedLocalOrders = KitchenService.getKitchenQueue(true);
-            const allOrders = enrichedLocalOrders.length > 0 ? enrichedLocalOrders : db.getRows('Orders');
+            const allOrders = OrderService.getAllOrdersForStaff();
             const unverifiedArrivals = bookings.filter(
-              (b) => b.Booking_Status === 'Arrived' && b.arrivalStatus !== 'Verified'
+              (b) => b.Booking_Status === 'Arrived' && b.arrivalStatus !== 'Verified' && !String(b.Status_History_JSON || '').includes('ARRIVAL_VERIFIED')
             );
 
             return {
@@ -549,8 +849,47 @@ export class RequestDispatcher {
           }
 
           case 'verifyCustomerArrival': {
-            const res = ReservationService.staffVerifyArrival(payload.bookingId, actorName);
-            if (res.success) GasAdapter.execute('verifyCustomerArrival', { bookingId: payload.bookingId }).catch(() => {});
+            const reqBId = String(payload.bookingId || '').trim().toUpperCase();
+            if (typeof window !== 'undefined') {
+              const liveVerify = await GasAdapter.execute('verifyCustomerArrival', {
+                bookingId: reqBId,
+                verifiedBy: actorName,
+              }, sessionId);
+              if (liveVerify.success) {
+                ReservationService.staffVerifyArrival(reqBId, actorName);
+                notificationHub.publish({
+                  id: `verified_${reqBId}`,
+                  type: 'ARRIVAL_VERIFIED',
+                  title: 'ARRIVAL VERIFIED',
+                  message: `Staff has verified arrival for Booking ${reqBId}. Table allocation in progress.`,
+                  priority: 'high',
+                  timestamp: new Date().toISOString(),
+                  metadata: { bookingId: reqBId },
+                });
+                return { success: true, message: liveVerify.message || 'Customer arrival verified by staff.' };
+              }
+              if (liveVerify.error?.code && liveVerify.error.code !== 'GAS_CONNECTION_ERROR' && liveVerify.error.code !== 'UNKNOWN_ACTION') {
+                return {
+                  success: false,
+                  error: {
+                    code: liveVerify.error.code || 'VERIFICATION_FAILED',
+                    message: liveVerify.error.message || liveVerify.message || 'Could not verify customer arrival.',
+                  },
+                };
+              }
+            }
+            const res = ReservationService.staffVerifyArrival(reqBId, actorName);
+            if (res.success) {
+              notificationHub.publish({
+                id: `verified_${reqBId}`,
+                type: 'ARRIVAL_VERIFIED',
+                title: 'ARRIVAL VERIFIED',
+                message: `Staff has verified arrival for Booking ${reqBId}. Table allocation in progress.`,
+                priority: 'high',
+                timestamp: new Date().toISOString(),
+                metadata: { bookingId: reqBId },
+              });
+            }
             return res.success
               ? { success: true, message: res.message }
               : { success: false, error: { code: 'VERIFICATION_FAILED', message: res.message } };
@@ -564,20 +903,104 @@ export class RequestDispatcher {
           }
 
           case 'allocateTable': {
+            const reqBId = String(payload.bookingId || '').trim().toUpperCase();
+            const reqTId = String(payload.tableId || '').trim().toUpperCase();
+            if (typeof window !== 'undefined') {
+              const liveAlloc = await GasAdapter.execute('allocateTable', {
+                bookingId: reqBId,
+                tableId: reqTId,
+              }, sessionId);
+              if (liveAlloc.success) {
+                TableService.allocateTable({
+                  bookingId: reqBId,
+                  tableId: reqTId,
+                  isImmediate: true,
+                });
+                notificationHub.publish({
+                  id: `alloc_${reqBId}_${reqTId}`,
+                  type: 'TABLE_ALLOCATED',
+                  title: 'TABLE ALLOCATED',
+                  message: `Table ${reqTId} has been allocated to Booking ${reqBId}.`,
+                  priority: 'high',
+                  timestamp: new Date().toISOString(),
+                  metadata: { bookingId: reqBId, tableNumber: reqTId },
+                });
+                return { success: true, data: liveAlloc.data, message: liveAlloc.message || 'Table allocated successfully.' };
+              }
+              if (liveAlloc.error?.code && liveAlloc.error.code !== 'GAS_CONNECTION_ERROR' && liveAlloc.error.code !== 'UNKNOWN_ACTION') {
+                return {
+                  success: false,
+                  error: {
+                    code: liveAlloc.error.code || 'ALLOCATION_FAILED',
+                    message: liveAlloc.error.message || liveAlloc.message || 'Could not allocate table.',
+                  },
+                };
+              }
+            }
             const res = TableService.allocateTable({
-              bookingId: payload.bookingId,
-              tableId: payload.tableId,
+              bookingId: reqBId,
+              tableId: reqTId,
               isImmediate: true,
             });
-            if (res.success) GasAdapter.execute('allocateTable', { tableId: payload.tableId }).catch(() => {});
+            if (res.success) {
+              notificationHub.publish({
+                id: `alloc_${reqBId}_${reqTId}`,
+                type: 'TABLE_ALLOCATED',
+                title: 'TABLE ALLOCATED',
+                message: `Table ${reqTId} has been allocated to Booking ${reqBId}.`,
+                priority: 'high',
+                timestamp: new Date().toISOString(),
+                metadata: { bookingId: reqBId, tableNumber: reqTId },
+              });
+            }
             return res.success
               ? { success: true, data: res, message: res.message }
               : { success: false, error: { code: 'ALLOCATION_FAILED', message: res.message } };
           }
 
           case 'seatCustomer': {
-            const res = TableService.seatCustomer(payload.bookingId, payload.tableId);
-            if (res.success) GasAdapter.execute('seatCustomer', { bookingId: payload.bookingId, tableId: payload.tableId }).catch(() => {});
+            const reqBId = String(payload.bookingId || '').trim().toUpperCase();
+            const reqTId = String(payload.tableId || '').trim().toUpperCase();
+            if (typeof window !== 'undefined') {
+              const liveSeat = await GasAdapter.execute('seatCustomer', {
+                bookingId: reqBId,
+                tableId: reqTId,
+              }, sessionId);
+              if (liveSeat.success) {
+                TableService.seatCustomer(reqBId, reqTId);
+                notificationHub.publish({
+                  id: `seat_${reqBId}_${reqTId}`,
+                  type: 'CUSTOMER_SEATED',
+                  title: 'WELCOME TO YOUR TABLE',
+                  message: `Party for Booking ${reqBId} is now seated at Table ${reqTId}. Ready for ordering!`,
+                  priority: 'high',
+                  timestamp: new Date().toISOString(),
+                  metadata: { bookingId: reqBId, tableNumber: reqTId },
+                });
+                return { success: true, message: liveSeat.message || 'Customer seated successfully.' };
+              }
+              if (liveSeat.error?.code && liveSeat.error.code !== 'GAS_CONNECTION_ERROR' && liveSeat.error.code !== 'UNKNOWN_ACTION') {
+                return {
+                  success: false,
+                  error: {
+                    code: liveSeat.error.code || 'SEAT_FAILED',
+                    message: liveSeat.error.message || liveSeat.message || 'Could not seat customer.',
+                  },
+                };
+              }
+            }
+            const res = TableService.seatCustomer(reqBId, reqTId);
+            if (res.success) {
+              notificationHub.publish({
+                id: `seat_${reqBId}_${reqTId}`,
+                type: 'CUSTOMER_SEATED',
+                title: 'WELCOME TO YOUR TABLE',
+                message: `Party for Booking ${reqBId} is now seated at Table ${reqTId}. Ready for ordering!`,
+                priority: 'high',
+                timestamp: new Date().toISOString(),
+                metadata: { bookingId: reqBId, tableNumber: reqTId },
+              });
+            }
             return res.success
               ? { success: true, message: res.message }
               : { success: false, error: { code: 'SEAT_FAILED', message: res.message } };
@@ -585,28 +1008,167 @@ export class RequestDispatcher {
 
           case 'authorizeOrder': {
             const res = OrderService.authorizeOrder(payload.orderId, actorName);
-            if (res.success) GasAdapter.execute('authorizeOrder', { orderId: payload.orderId, authorizedBy: actorName }).catch(() => {});
+            if (res.success && typeof window !== 'undefined') {
+              await GasAdapter.execute('authorizeOrder', { orderId: payload.orderId, authorizedBy: actorName }).catch(() => {});
+            }
+            if (res.success) {
+              notificationHub.publish({
+                id: `order_auth_${payload.orderId}`,
+                type: 'NEW_ORDER',
+                title: 'NEW ORDER RECEIVED IN KITCHEN',
+                message: `Order ${payload.orderId} has been authorized for kitchen preparation.`,
+                priority: 'high',
+                timestamp: new Date().toISOString(),
+                metadata: { orderId: payload.orderId },
+                actionLabel: 'View Order',
+              });
+            }
             return res.success
               ? { success: true, message: res.message }
               : { success: false, error: { code: 'AUTH_ORDER_FAILED', message: res.message } };
           }
 
-          case 'generateBill': {
-            const res = BillingService.generateFinalBill({
+          case 'staffCreateOrder':
+          case 'placeOrder': {
+            const res = OrderService.createOrder({
               bookingId: payload.bookingId,
+              items: payload.items,
+              specialInstructions: payload.specialInstructions,
+              createdByRole: 'Staff',
+            });
+            if (!res.success) {
+              return { success: false, error: { code: 'ORDER_FAILED', message: res.message } };
+            }
+            if (typeof window !== 'undefined') {
+              await GasAdapter.execute('placeOrder', {
+                orderId: res.orderId,
+                bookingId: payload.bookingId,
+                items: payload.items,
+                specialInstructions: payload.specialInstructions,
+                createdByRole: 'Staff',
+              }).catch(() => {});
+            }
+            if (res.orderId) {
+              notificationHub.publish({
+                id: `order_staff_${res.orderId}`,
+                type: 'NEW_ORDER',
+                title: 'NEW ORDER SUBMITTED',
+                message: `Staff placed Order ${res.orderId} for Booking ${payload.bookingId}.`,
+                priority: 'high',
+                timestamp: new Date().toISOString(),
+                metadata: {
+                  orderId: res.orderId,
+                  bookingId: payload.bookingId,
+                },
+                actionLabel: 'View Order',
+              });
+            }
+            return { success: true, data: res, message: res.message };
+          }
+
+          case 'updateOrderItemQuantity': {
+            const res = OrderService.updateItemQuantity({
+              orderItemId: payload.orderItemId,
+              quantity: Number(payload.quantity),
+              changedBy: actorName,
+            });
+            if (res.success && typeof window !== 'undefined') {
+              await GasAdapter.execute('updateOrderItemQuantity', {
+                orderItemId: payload.orderItemId,
+                quantity: Number(payload.quantity),
+                changedBy: actorName,
+              }).catch(() => {});
+            }
+            return res.success
+              ? { success: true, message: res.message }
+              : { success: false, error: { code: 'ITEM_UPDATE_FAILED', message: res.message } };
+          }
+
+          case 'cancelOrReplaceItem': {
+            const res = OrderService.cancelOrReplaceItem({
+              orderItemId: payload.orderItemId,
+              action: payload.action,
+              reason: payload.reason,
+              replacementFoodId: payload.replacementFoodId,
+              changedBy: actorName,
+            });
+            if (res.success && typeof window !== 'undefined') {
+              await GasAdapter.execute('cancelOrReplaceItem', {
+                orderItemId: payload.orderItemId,
+                action: payload.action,
+                reason: payload.reason,
+                replacementFoodId: payload.replacementFoodId,
+                changedBy: actorName,
+              }).catch(() => {});
+            }
+            return res.success
+              ? { success: true, message: res.message }
+              : { success: false, error: { code: 'ITEM_CHANGE_FAILED', message: res.message } };
+          }
+
+          case 'generateBill': {
+            const reqBId = String(payload.bookingId || '').trim().toUpperCase();
+            if (typeof window !== 'undefined') {
+              const liveBill = await GasAdapter.execute('generateBill', {
+                bookingId: reqBId,
+                discountPercent: Number(payload.discountPercent) || 0,
+                discountReason: payload.discountReason,
+              }, sessionId);
+
+              if (liveBill.success && liveBill.data) {
+                const existing = db.findOne('Bills', (b) => b.Booking_ID.toUpperCase() === reqBId);
+                if (!existing) {
+                  db.insertRow('Bills', liveBill.data);
+                }
+                notificationHub.publish({
+                  id: `bill_${reqBId}_${liveBill.data.Bill_ID}`,
+                  type: 'BILL_GENERATED',
+                  title: 'YOUR BILL IS READY',
+                  message: `Final bill ${liveBill.data.Bill_ID} has been generated. Total payable: ₹${liveBill.data.Grand_Total}.`,
+                  priority: 'high',
+                  timestamp: new Date().toISOString(),
+                  metadata: {
+                    bookingId: reqBId,
+                    billId: liveBill.data.Bill_ID,
+                    amount: Number(liveBill.data.Grand_Total),
+                  },
+                  actionLabel: 'View Bill',
+                });
+                return { success: true, data: liveBill.data, message: liveBill.message || 'Final bill generated.' };
+              }
+
+              if (liveBill.error?.code && liveBill.error.code !== 'GAS_CONNECTION_ERROR' && liveBill.error.code !== 'UNKNOWN_ACTION') {
+                return {
+                  success: false,
+                  error: {
+                    code: liveBill.error.code || 'BILL_FAILED',
+                    message: liveBill.error.message || liveBill.message || 'Could not generate bill.',
+                  },
+                };
+              }
+            }
+
+            const res = BillingService.generateFinalBill({
+              bookingId: reqBId,
               discountPercent: Number(payload.discountPercent) || 0,
               discountReason: payload.discountReason,
               staffUserName: actorName,
             });
             if (res.success && res.bill) {
-              GasAdapter.execute('generateBill', {
-                bookingId: payload.bookingId,
-                subtotal: res.bill.Subtotal,
-                taxAmount: res.bill.Tax_Amount,
-                discount: res.bill.Discount,
-                grandTotal: res.bill.Grand_Total,
-                discountReason: res.bill.Discount_Reason,
-              }).catch(() => {});
+              notificationHub.publish({
+                id: `bill_${reqBId}_${res.bill.Bill_ID}`,
+                type: 'BILL_GENERATED',
+                title: 'YOUR BILL IS READY',
+                message: `Final bill ${res.bill.Bill_ID} has been generated. Total payable: ₹${res.bill.Grand_Total}.`,
+                priority: 'high',
+                timestamp: new Date().toISOString(),
+                metadata: {
+                  bookingId: reqBId,
+                  billId: res.bill.Bill_ID,
+                  amount: Number(res.bill.Grand_Total),
+                },
+                actionLabel: 'View Bill',
+              });
             }
             return res.success
               ? { success: true, data: res.bill, message: res.message }
@@ -626,6 +1188,19 @@ export class RequestDispatcher {
                 isConfirmed: Boolean(payload.isConfirmed),
                 verifiedBy: actorName,
               }).catch(() => {});
+
+              notificationHub.publish({
+                id: `pay_${payload.paymentId}`,
+                type: 'PAYMENT_VERIFIED',
+                title: 'PAYMENT VERIFIED',
+                message: `Payment ${payload.paymentId} verified by staff. Status: ${payload.isConfirmed ? 'Paid' : 'Rejected'}.`,
+                priority: 'normal',
+                timestamp: new Date().toISOString(),
+                metadata: {
+                  billId: payload.paymentId,
+                  status: payload.isConfirmed ? 'Paid' : 'Rejected',
+                },
+              });
             }
             return res.success
               ? { success: true, message: res.message }
@@ -633,17 +1208,37 @@ export class RequestDispatcher {
           }
 
           case 'confirmDeparture': {
+            const reqBId = String(payload.bookingId || '').trim().toUpperCase();
+            const reqTId = String(payload.tableId || '').trim().toUpperCase();
+            if (typeof window !== 'undefined') {
+              const liveDep = await GasAdapter.execute('confirmDeparture', {
+                bookingId: reqBId,
+                tableId: reqTId,
+                staffUserName: actorName,
+              }, sessionId);
+              if (liveDep.success) {
+                PaymentService.confirmDepartureAndReleaseTable({
+                  bookingId: reqBId,
+                  tableId: reqTId,
+                  staffUserName: actorName,
+                });
+                return { success: true, message: liveDep.message || 'Table cleaned and released for new guests.' };
+              }
+              if (liveDep.error?.code && liveDep.error.code !== 'GAS_CONNECTION_ERROR' && liveDep.error.code !== 'UNKNOWN_ACTION') {
+                return {
+                  success: false,
+                  error: {
+                    code: liveDep.error.code || 'DEPARTURE_FAILED',
+                    message: liveDep.error.message || liveDep.message || 'Could not confirm departure.',
+                  },
+                };
+              }
+            }
             const res = PaymentService.confirmDepartureAndReleaseTable({
-              bookingId: payload.bookingId,
-              tableId: payload.tableId,
+              bookingId: reqBId,
+              tableId: reqTId,
               staffUserName: actorName,
             });
-            if (res.success) {
-              GasAdapter.execute('confirmDeparture', {
-                bookingId: payload.bookingId,
-                tableId: payload.tableId,
-              }).catch(() => {});
-            }
             return res.success
               ? { success: true, message: res.message }
               : { success: false, error: { code: 'DEPARTURE_FAILED', message: res.message } };
@@ -701,6 +1296,19 @@ export class RequestDispatcher {
           }
 
           case 'updateKitchenPreparationStatus': {
+            const statusTitles: Record<string, string> = {
+              Accepted: 'ORDER ACCEPTED',
+              Preparing: 'YOUR FOOD IS BEING PREPARED',
+              Ready: 'ORDER READY',
+              Served: 'ORDER COMPLETED',
+            };
+            const statusMsgs: Record<string, string> = {
+              Accepted: `The kitchen has accepted Order ${payload.orderId}.`,
+              Preparing: `Chefs have started cooking Order ${payload.orderId}.`,
+              Ready: `Order ${payload.orderId} is cooked and ready to be served!`,
+              Served: `Order ${payload.orderId} has been served to the table. Bon appétit!`,
+            };
+
             if (typeof window !== 'undefined') {
               const liveUpd = await GasAdapter.execute('updateKitchenPreparationStatus', {
                 orderId: payload.orderId,
@@ -714,6 +1322,18 @@ export class RequestDispatcher {
                 newStatus: payload.newStatus,
                 kitchenUserName: actorName,
                 reason: payload.reason,
+              });
+              notificationHub.publish({
+                id: `kitchen_${payload.orderId}_${payload.newStatus}`,
+                type: 'ORDER_STATUS_CHANGED',
+                title: statusTitles[payload.newStatus] || `ORDER STATUS: ${payload.newStatus}`,
+                message: statusMsgs[payload.newStatus] || `Order ${payload.orderId} status changed to ${payload.newStatus}.`,
+                priority: payload.newStatus === 'Ready' ? 'high' : 'normal',
+                timestamp: new Date().toISOString(),
+                metadata: {
+                  orderId: payload.orderId,
+                  status: payload.newStatus,
+                },
               });
               if (liveUpd.success) {
                 return { success: true, message: liveUpd.message || 'Status updated.' };
@@ -735,6 +1355,20 @@ export class RequestDispatcher {
               kitchenUserName: actorName,
               reason: payload.reason,
             });
+            if (res.success) {
+              notificationHub.publish({
+                id: `kitchen_${payload.orderId}_${payload.newStatus}`,
+                type: 'ORDER_STATUS_CHANGED',
+                title: statusTitles[payload.newStatus] || `ORDER STATUS: ${payload.newStatus}`,
+                message: statusMsgs[payload.newStatus] || `Order ${payload.orderId} status changed to ${payload.newStatus}.`,
+                priority: payload.newStatus === 'Ready' ? 'high' : 'normal',
+                timestamp: new Date().toISOString(),
+                metadata: {
+                  orderId: payload.orderId,
+                  status: payload.newStatus,
+                },
+              });
+            }
             return res.success
               ? { success: true, message: res.message }
               : { success: false, error: { code: 'KITCHEN_UPDATE_FAILED', message: res.message } };
@@ -790,10 +1424,14 @@ export class RequestDispatcher {
             let feedbackAnalytics = FeedbackService.getAdminFeedbackAnalytics();
 
             if (typeof window !== 'undefined') {
-              const liveFb = await GasAdapter.execute('getAdminFeedbackAnalytics', {});
-              if (liveFb.success && liveFb.data) {
-                feedbackAnalytics = liveFb.data;
-              }
+              try {
+                const liveFbPromise = GasAdapter.execute('getAdminFeedbackAnalytics', {});
+                const timeoutPromise = new Promise<any>((r) => setTimeout(() => r({ success: false }), 2000));
+                const liveFb: any = await Promise.race([liveFbPromise, timeoutPromise]);
+                if (liveFb && liveFb.success && liveFb.data) {
+                  feedbackAnalytics = liveFb.data;
+                }
+              } catch {}
             }
 
             return {

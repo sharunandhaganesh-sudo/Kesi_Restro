@@ -15,6 +15,7 @@ import { DishImage } from '../components/DishImage';
 import { BrandLogo } from '../components/BrandLogo';
 import { BRAND_CONFIG } from '../../config/branding';
 import { RequestDispatcher } from '../../backend/dispatcher';
+import { notificationHub } from '../services/notificationHub';
 import { UserSessionState, MenuItem, CartItem } from '../types';
 import {
   CalendarDays,
@@ -103,6 +104,11 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
   const [feedbackLoading, setFeedbackLoading] = useState<boolean>(false);
   const [customerFeedbacks, setCustomerFeedbacks] = useState<any[]>([]);
   const [customerHistory, setCustomerHistory] = useState<any[]>([]);
+  const [isEditingProfile, setIsEditingProfile] = useState<boolean>(false);
+  const [editProfileName, setEditProfileName] = useState<string>('');
+  const [editProfileEmail, setEditProfileEmail] = useState<string>('');
+  const [profileSaving, setProfileSaving] = useState<boolean>(false);
+  const [dashboardSection, setDashboardSection] = useState<'visit' | 'history' | 'feedback'>('visit');
   const [copiedUpi, setCopiedUpi] = useState<boolean>(false);
   const [dynamicUpiQrUrl, setDynamicUpiQrUrl] = useState<string>('');
   const [restaurantPaymentInfo, setRestaurantPaymentInfo] = useState<{ upiId: string; upiPayeeName: string }>({
@@ -134,6 +140,29 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
       restoreDraftCart(session.sessionId);
     }
   }, [session?.sessionId]);
+
+  // Lock background scroll and close on Escape key when modals/drawers are open
+  useEffect(() => {
+    const isAnyModalOpen = Boolean(showOtpModal || isCartOpen || isPaymentOpen);
+    if (!isAnyModalOpen) return;
+
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowOtpModal(false);
+        setIsCartOpen(false);
+        setIsPaymentOpen(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = originalOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showOtpModal, isCartOpen, isPaymentOpen]);
 
   // Lock selected table if arrived via Table QR scan
   useEffect(() => {
@@ -205,13 +234,13 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
       if (historyRes.success && Array.isArray(historyRes.data) && historyRes.data.length > 0) {
         setCustomerHistory(historyRes.data);
 
-        // Find active booking: Confirmed, Arrived, or Seated
+        // Find strictly active booking: Confirmed, Arrived, or Seated
         const active = historyRes.data.find(
           (b: any) =>
             b.Booking_Status === 'Confirmed' ||
             b.Booking_Status === 'Arrived' ||
             b.Booking_Status === 'Seated'
-        ) || (historyRes.data[0].Booking_Status !== 'Cancelled' ? historyRes.data[0] : null);
+        ) || null;
 
         if (active) {
           setActiveBooking(active);
@@ -281,6 +310,121 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
     if (res.success && res.data) {
       setBookingDetails(res.data);
       setActiveBooking(res.data.booking);
+
+      const b = res.data.booking;
+      // 1. Detect Arrival Verified
+      if (b && (b.Arrival_Status === 'Verified' || b.Booking_Status === 'Arrived')) {
+        const arrKey = `verified_${b.Booking_ID}`;
+        if (!notificationHub.hasSeen(arrKey)) {
+          notificationHub.publish({
+            id: arrKey,
+            type: 'ARRIVAL_VERIFIED',
+            title: 'Arrival Confirmed by Staff',
+            message: 'Host desk has verified your arrival. Please wait a moment while your table is being prepared.',
+            timestamp: Date.now(),
+            priority: 'high',
+            metadata: {
+              bookingId: b.Booking_ID,
+              customerName: b.Customer_Name,
+            },
+            autoDismissMs: 8000,
+          });
+        }
+      }
+
+      // 2. Detect Seated
+      if (b && b.Booking_Status === 'Seated') {
+        const seatKey = `seat_${b.Booking_ID}_${b.Assigned_Table_ID || 'table'}`;
+        if (!notificationHub.hasSeen(seatKey)) {
+          notificationHub.publish({
+            id: seatKey,
+            type: 'CUSTOMER_SEATED',
+            title: 'Your Table is Ready!',
+            message: `You have been seated at Table #${b.Table_Number || b.Assigned_Table_ID || '1'}. You can now browse the menu and place your food orders.`,
+            timestamp: Date.now(),
+            priority: 'high',
+            metadata: {
+              bookingId: b.Booking_ID,
+              tableNumber: b.Table_Number || b.Assigned_Table_ID,
+            },
+            autoDismissMs: 8000,
+          });
+        }
+      }
+
+      // 3. Detect Bill Ready
+      if (res.data.bill?.Bill_ID) {
+        const billKey = `bill_${b?.Booking_ID || activeBooking.Booking_ID}_${res.data.bill.Bill_ID}`;
+        if (!notificationHub.hasSeen(billKey) && res.data.bill.Payment_Status !== 'Paid') {
+          notificationHub.publish({
+            id: billKey,
+            type: 'BILL_GENERATED',
+            title: 'Your Bill is Ready',
+            message: `Final Bill #${res.data.bill.Bill_ID} has been generated. Total payable: ₹${res.data.bill.Grand_Total}. Click View Bill to review and pay.`,
+            timestamp: Date.now(),
+            priority: 'high',
+            metadata: {
+              bookingId: b?.Booking_ID || activeBooking.Booking_ID,
+              billId: res.data.bill.Bill_ID,
+              grandTotal: res.data.bill.Grand_Total,
+            },
+            actionLabel: 'View Bill',
+            autoDismissMs: 0,
+            onAction: () => {
+              setIsPaymentOpen(true);
+            },
+          });
+        }
+      }
+
+      // 4. Detect Payment Settled
+      if (res.data.bill?.Payment_Status === 'Paid') {
+        const payKey = `pay_${res.data.bill.Payment_ID || res.data.bill.Bill_ID}`;
+        if (!notificationHub.hasSeen(payKey)) {
+          notificationHub.publish({
+            id: payKey,
+            type: 'PAYMENT_VERIFIED',
+            title: 'Payment Confirmed & Verified',
+            message: `Staff has verified your payment for Bill #${res.data.bill.Bill_ID}. Thank you for dining with ${BRAND_CONFIG.name}!`,
+            timestamp: Date.now(),
+            priority: 'normal',
+            metadata: {
+              bookingId: b?.Booking_ID || activeBooking.Booking_ID,
+              billId: res.data.bill.Bill_ID,
+            },
+            autoDismissMs: 8000,
+          });
+        }
+      }
+
+      // 5. Detect Order Status progression
+      if (Array.isArray(res.data.orders)) {
+        for (const order of res.data.orders) {
+          if (['Preparing', 'Ready', 'Served'].includes(order.Order_Status)) {
+            const ordKey = `kitchen_${order.Order_ID}_${order.Order_Status}`;
+            if (!notificationHub.hasSeen(ordKey)) {
+              notificationHub.publish({
+                id: ordKey,
+                type: 'ORDER_STATUS_CHANGED',
+                title:
+                  order.Order_Status === 'Ready'
+                    ? 'Food Order is Ready!'
+                    : order.Order_Status === 'Preparing'
+                    ? 'Kitchen is Preparing Your Food'
+                    : 'Food Order Served',
+                message: `Order #${order.Order_ID} status updated: ${order.Order_Status}.`,
+                timestamp: Date.now(),
+                priority: order.Order_Status === 'Ready' ? 'high' : 'normal',
+                metadata: {
+                  orderId: order.Order_ID,
+                  status: order.Order_Status,
+                },
+                autoDismissMs: 8000,
+              });
+            }
+          }
+        }
+      }
     }
     if (fbRes.success && Array.isArray(fbRes.data)) {
       setCustomerFeedbacks(fbRes.data);
@@ -343,7 +487,7 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
 
     const res = await RequestDispatcher.dispatch({
       action: 'verifyCustomerOTP',
-      payload: { mobileNumber, otp: otpInput },
+      payload: { mobileNumber, otp: otpInput, customerName, email },
     });
 
     setAuthLoading(false);
@@ -373,6 +517,11 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
         partySize,
         reservationDate: visitType === 'Online' ? reservationDate : undefined,
         reservationTime: visitType === 'Online' ? reservationTime : undefined,
+        tableId: visitType === 'Online' ? selectedTableId : undefined,
+        customerId: (session as any).customerId || session.userId,
+        customerName: (session as any).customerName || session.name,
+        customerMobile: (session as any).mobileNumber || (session as any).mobile,
+        email: session.email,
       },
     });
 
@@ -439,24 +588,28 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
 
   // Cart operations (persisted to backend immediately)
   function addToCart(food: MenuItem) {
+    let nextCart: CartItem[] = [];
     setCart((prev) => {
       const idx = prev.findIndex((i) => i.food.Food_ID === food.Food_ID);
-      let nextCart: CartItem[];
       if (idx >= 0) {
         nextCart = [...prev];
         nextCart[idx] = { ...nextCart[idx], quantity: nextCart[idx].quantity + 1 };
       } else {
         nextCart = [...prev, { food, quantity: 1 }];
       }
-      persistCart(nextCart);
       return nextCart;
     });
+    // Persist outside React state updater function
+    if (nextCart.length > 0) {
+      persistCart(nextCart);
+    }
     showToast('success', `Added ${food.Food_Name} to order.`);
   }
 
   function updateQuantity(foodId: string, delta: number) {
+    let nextCart: CartItem[] = [];
     setCart((prev) => {
-      const nextCart = prev
+      nextCart = prev
         .map((item) => {
           if (item.food.Food_ID === foodId) {
             const newQ = item.quantity + delta;
@@ -465,9 +618,10 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
           return item;
         })
         .filter(Boolean) as CartItem[];
-      persistCart(nextCart);
       return nextCart;
     });
+    // Persist outside React state updater function
+    persistCart(nextCart);
   }
 
   const cartTotal = cart.reduce((sum, item) => sum + item.food.Price * item.quantity, 0);
@@ -475,8 +629,41 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
   // Submit Order
   async function handleSubmitOrder() {
     if (cart.length === 0 || placingOrder) return;
-    if (!activeBooking?.Booking_ID || !session?.sessionId) {
-      showToast('error', 'Please create or join a booking visit before placing orders.');
+    if (!session?.sessionId) {
+      showToast('error', 'Please sign in to place your order.');
+      return;
+    }
+
+    let targetBookingId = activeBooking?.Booking_ID;
+
+    // If customer arrived via verified table QR scan and has no booking visit yet, auto-create a dine-in visit
+    if (!targetBookingId && scannedTable?.Table_ID) {
+      setPlacingOrder(true);
+      const walkinRes = await RequestDispatcher.dispatch({
+        action: 'createBooking',
+        sessionId: session.sessionId,
+        payload: {
+          customerName: session.customerName || session.user?.userName || 'Dine-in Guest',
+          customerMobile: session.mobileNumber || session.user?.mobileNumber || '',
+          customerEmail: session.email || session.user?.email || '',
+          partySize: Math.max(1, Number(scannedTable.Seating_Capacity) || 2),
+          visitType: 'Walk-in',
+          tableId: scannedTable.Table_ID,
+        },
+      });
+
+      if (walkinRes.success && walkinRes.data?.Booking_ID) {
+        targetBookingId = walkinRes.data.Booking_ID;
+        setActiveBooking(walkinRes.data);
+      } else {
+        setPlacingOrder(false);
+        showToast('error', walkinRes.error?.message || 'Could not initialize table visit for ordering.');
+        return;
+      }
+    }
+
+    if (!targetBookingId) {
+      showToast('error', 'Please select or create an active table visit before ordering food.');
       return;
     }
 
@@ -490,7 +677,7 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
       action: 'placeOrder',
       sessionId: session.sessionId,
       payload: {
-        bookingId: activeBooking.Booking_ID,
+        bookingId: targetBookingId,
         items: itemsPayload,
         specialInstructions: specialInstructions.trim(),
       },
@@ -501,7 +688,7 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
       setCart([]);
       setSpecialInstructions('');
       setIsCartOpen(false);
-      showToast('success', 'Order confirmed & sent directly to Kitchen!');
+      showToast('success', 'Order submitted! Kitchen and staff have received your order.');
       refreshBookingDetails();
     } else {
       showToast('error', res.error?.message || 'Failed to place order.');
@@ -572,6 +759,33 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
     }
   }
 
+  async function handleUpdateProfile(e: React.FormEvent) {
+    e.preventDefault();
+    if (!session?.sessionId || profileSaving) return;
+    setProfileSaving(true);
+    const res = await RequestDispatcher.dispatch({
+      action: 'updateCustomerProfile',
+      sessionId: session.sessionId,
+      payload: {
+        customerName: editProfileName.trim(),
+        email: editProfileEmail.trim(),
+      },
+    });
+    setProfileSaving(false);
+    if (res.success && res.data) {
+      onSetSession({
+        ...session,
+        name: res.data.customerName || editProfileName.trim(),
+        customerName: res.data.customerName || editProfileName.trim(),
+        email: res.data.email || editProfileEmail.trim(),
+      });
+      setIsEditingProfile(false);
+      showToast('success', 'Customer profile updated.');
+    } else {
+      showToast('error', res.error?.message || 'Unable to update profile.');
+    }
+  }
+
   function showToast(type: 'success' | 'error', text: string) {
     setNotice({ type, text });
     setTimeout(() => setNotice(null), 4000);
@@ -617,7 +831,11 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
             <span className="text-[#6B4C35]">•</span>
             {session ? (
               <span className="text-[#3B1A08] font-medium">
-                Signed in as <strong className="text-[#3B1A08] font-semibold">{session.name}</strong> ({session.mobile})
+                Signed in as{' '}
+                <strong className="text-[#3B1A08] font-semibold">
+                  {(session as any).customerName || session.name}
+                </strong>{' '}
+                ({(session as any).mobileNumber || session.mobile})
               </span>
             ) : (
               <span className="text-[#6B4C35]">
@@ -760,13 +978,19 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
         {/* OTP Modal */}
         <AnimatePresence>
           {showOtpModal && (
-            <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
+            <div
+              onClick={(e) => {
+                if (e.target === e.currentTarget) setShowOtpModal(false);
+              }}
+              className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto touch-scroll"
+            >
               <motion.div
+                onClick={(e) => e.stopPropagation()}
                 initial={{ opacity: 0, scale: 0.96, y: 12 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.96, y: 12 }}
                 transition={{ duration: 0.2 }}
-                className="bg-white rounded-3xl max-w-md w-full p-6 sm:p-8 space-y-4 shadow-2xl border border-[#E6D5C3]"
+                className="bg-white rounded-3xl max-w-md w-full p-5 sm:p-8 space-y-4 shadow-2xl border border-[#E6D5C3] max-h-[92vh] sm:max-h-[90vh] overflow-y-auto overscroll-contain my-auto"
               >
                 <div className="flex items-center justify-between">
                   <div className="flex items-center space-x-2.5">
@@ -850,9 +1074,166 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
           )}
         </AnimatePresence>
 
-        {/* Signed-In: Active Visit Lifecycle Card */}
+        {/* Signed-In: Personalized Customer Dashboard */}
         {session && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          <div className="space-y-6">
+            {/* Customer Profile & Dashboard Navigation */}
+            <div className="bg-white rounded-3xl p-5 shadow-xs border border-[#E6D5C3] flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="space-y-1">
+                <div className="flex items-center space-x-2">
+                  <span className="text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-[#FDF4E7] text-[#F56A00] border border-[#E6D5C3]">
+                    {(session as any).customerId || session.userId || 'Customer'}
+                  </span>
+                  <h2 className="font-extrabold text-lg text-[#3B1A08]">
+                    {(session as any).customerName || session.name}
+                  </h2>
+                </div>
+                <p className="text-xs text-[#6B4C35]">
+                  Mobile: <span className="font-mono font-semibold">{(session as any).mobileNumber || session.mobile}</span>
+                  {' • '}
+                  Email: <span className="font-medium">{session.email || 'Not set'}</span>
+                </p>
+
+                {isEditingProfile && (
+                  <form onSubmit={handleUpdateProfile} className="pt-2 flex flex-wrap items-center gap-2">
+                    <input
+                      type="text"
+                      required
+                      placeholder="Full Name"
+                      value={editProfileName}
+                      onChange={(e) => setEditProfileName(e.target.value)}
+                      className="px-3 py-1.5 rounded-xl border border-[#E6D5C3] bg-[#FFF9F0] text-xs text-[#3B1A08]"
+                    />
+                    <input
+                      type="email"
+                      required
+                      placeholder="Email Address"
+                      value={editProfileEmail}
+                      onChange={(e) => setEditProfileEmail(e.target.value)}
+                      className="px-3 py-1.5 rounded-xl border border-[#E6D5C3] bg-[#FFF9F0] text-xs text-[#3B1A08]"
+                    />
+                    <button
+                      type="submit"
+                      disabled={profileSaving}
+                      className="px-3.5 py-1.5 rounded-full bg-[#F56A00] text-white text-xs font-semibold cursor-pointer"
+                    >
+                      {profileSaving ? 'Saving...' : 'Save Profile'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsEditingProfile(false)}
+                      className="px-3 py-1.5 rounded-full bg-[#FDF4E7] text-[#3B1A08] text-xs font-semibold cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  </form>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {!isEditingProfile && (
+                  <button
+                    onClick={() => {
+                      setEditProfileName((session as any).customerName || session.name || '');
+                      setEditProfileEmail(session.email || '');
+                      setIsEditingProfile(true);
+                    }}
+                    className="px-3.5 py-1.5 rounded-full border border-[#E6D5C3] bg-[#FFF9F0] hover:bg-[#FDF4E7] text-[#3B1A08] text-xs font-semibold transition cursor-pointer"
+                  >
+                    Edit Profile
+                  </button>
+                )}
+                {(['visit', 'history', 'feedback'] as const).map((tabKey) => (
+                  <button
+                    key={tabKey}
+                    onClick={() => setDashboardSection(tabKey)}
+                    className={`px-3.5 py-1.5 rounded-full text-xs font-semibold transition cursor-pointer ${
+                      dashboardSection === tabKey
+                        ? 'bg-[#3B1A08] text-white'
+                        : 'bg-[#FDF4E7] text-[#6B4C35] hover:text-[#3B1A08]'
+                    }`}
+                  >
+                    {tabKey === 'visit'
+                      ? 'Current Visit & Menu'
+                      : tabKey === 'history'
+                      ? `Order History (${customerHistory.length})`
+                      : `Feedback History (${customerFeedbacks.length})`}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {dashboardSection === 'history' && (
+              <div className="bg-white rounded-3xl p-6 shadow-xs border border-[#E6D5C3] space-y-4">
+                <h3 className="font-bold text-base text-[#3B1A08]">Your Previous Visits & Order History</h3>
+                {customerHistory.length === 0 ? (
+                  <p className="text-xs text-[#6B4C35]">No previous bookings or orders found for your account.</p>
+                ) : (
+                  <div className="space-y-3">
+                    {customerHistory.map((bk: any) => (
+                      <div key={bk.Booking_ID} className="p-4 rounded-2xl bg-[#FFF9F0] border border-[#E6D5C3] space-y-2 text-xs">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <span className="font-mono font-bold text-[#3B1A08]">{bk.Booking_ID}</span>
+                            <span className="ml-2 text-[#6B4C35]">
+                              {bk.Visit_Type} • Party of {bk.Party_Size} • {bk.Booking_Date}
+                            </span>
+                          </div>
+                          <span className="px-2.5 py-0.5 rounded-full bg-[#3B1A08]/10 text-[#3B1A08] font-semibold text-[11px]">
+                            {bk.Booking_Status}
+                          </span>
+                        </div>
+                        {Array.isArray(bk.orders) && bk.orders.length > 0 && (
+                          <div className="space-y-1.5 pt-1 border-t border-[#E6D5C3]/70">
+                            {bk.orders.map((ord: any) => (
+                              <div key={ord.Order_ID} className="flex items-center justify-between text-[11px]">
+                                <span className="font-mono font-semibold text-[#3B1A08]">{ord.Order_ID}</span>
+                                <span className="text-[#6B4C35]">{String(ord.Order_Status || '').replace(/_/g, ' ')}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {bk.bill && (
+                          <div className="pt-1 border-t border-[#E6D5C3]/70 flex items-center justify-between font-semibold text-[11px]">
+                            <span>Bill {bk.bill.Bill_ID}</span>
+                            <span>
+                              ₹{bk.bill.Grand_Total} ({bk.bill.Payment_Status})
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {dashboardSection === 'feedback' && (
+              <div className="bg-white rounded-3xl p-6 shadow-xs border border-[#E6D5C3] space-y-4">
+                <h3 className="font-bold text-base text-[#3B1A08]">Your Submitted Feedback History</h3>
+                {customerFeedbacks.length === 0 ? (
+                  <p className="text-xs text-[#6B4C35]">You have not submitted any feedback yet.</p>
+                ) : (
+                  <div className="space-y-3">
+                    {customerFeedbacks.map((fb: any, idx: number) => (
+                      <div key={fb.Feedback_ID || idx} className="p-4 rounded-2xl bg-[#FFF9F0] border border-[#E6D5C3] space-y-1 text-xs">
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono font-bold text-[#3B1A08]">{fb.Booking_ID}</span>
+                          <span className="font-bold text-[#F56A00]">{fb.Overall_Rating} / 5 ★</span>
+                        </div>
+                        <p className="text-[#3B1A08]">{fb.Comments || 'No comment provided.'}</p>
+                        <p className="text-[11px] text-[#6B4C35]">
+                          Submitted: {fb.Submitted_At ? new Date(fb.Submitted_At).toLocaleString() : 'Recorded'}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {dashboardSection === 'visit' && (
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             {/* Left: Active Booking / Queue Status */}
             <div className="lg:col-span-5 space-y-4">
               {activeBooking ? (
@@ -975,7 +1356,7 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
 
                   {/* Final Bill Review & Payment CTA */}
                   {bookingDetails?.bill && (
-                    <div className="pt-3 border-t border-[#E6D5C3] space-y-2.5">
+                    <div id="bill-section" className="pt-3 border-t border-[#E6D5C3] space-y-2.5">
                       <div className="flex items-center justify-between text-xs">
                         <span className="text-[#6B4C35] font-medium">Final Bill Total:</span>
                         <span className="font-bold text-base text-[#3B1A08]">
@@ -1225,12 +1606,22 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
                     <span className="font-bold text-sm text-[#3B1A08]">
                       Your Active Orders ({bookingDetails.orders.length})
                     </span>
-                    <button
-                      onClick={refreshBookingDetails}
-                      className="text-[#6B4C35] hover:text-[#3B1A08] p-1 rounded-full hover:bg-[#FDF4E7] transition cursor-pointer"
-                    >
-                      <RefreshCw className="w-3.5 h-3.5" />
-                    </button>
+                    <div className="flex items-center space-x-2">
+                      <button
+                        onClick={() => {
+                          document.getElementById('customer-dine-in-menu')?.scrollIntoView({ behavior: 'smooth' });
+                        }}
+                        className="px-3 py-1 rounded-full bg-[#F56A00] hover:bg-[#D95800] text-white text-[11px] font-semibold transition cursor-pointer"
+                      >
+                        + Add More Items
+                      </button>
+                      <button
+                        onClick={refreshBookingDetails}
+                        className="text-[#6B4C35] hover:text-[#3B1A08] p-1 rounded-full hover:bg-[#FDF4E7] transition cursor-pointer"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
 
                   <div className="space-y-2">
@@ -1303,7 +1694,7 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
             </div>
 
             {/* Right: Interactive Menu & Cart Section */}
-            <div className="lg:col-span-7 space-y-5">
+            <div id="customer-dine-in-menu" className="lg:col-span-7 space-y-5">
               {/* Menu Controls: Search & Category Filter */}
               <div className="bg-white rounded-3xl p-5 shadow-xs border border-[#E6D5C3] space-y-3">
                 <div className="flex items-center justify-between">
@@ -1396,14 +1787,22 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
               </div>
             </div>
           </div>
+            )}
+          </div>
         )}
       </div>
 
       {/* Cart Drawer */}
       <AnimatePresence>
         {isCartOpen && (
-          <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex justify-end">
+          <div
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setIsCartOpen(false);
+            }}
+            className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex justify-end"
+          >
             <motion.div
+              onClick={(e) => e.stopPropagation()}
               initial={{ x: '100%' }}
               animate={{ x: 0 }}
               exit={{ x: '100%' }}
@@ -1502,8 +1901,14 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
       {/* Final Bill & Manual UPI Payment Drawer */}
       <AnimatePresence>
         {isPaymentOpen && bookingDetails?.bill && (
-          <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex justify-end">
+          <div
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setIsPaymentOpen(false);
+            }}
+            className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex justify-end"
+          >
             <motion.div
+              onClick={(e) => e.stopPropagation()}
               initial={{ x: '100%' }}
               animate={{ x: 0 }}
               exit={{ x: '100%' }}
@@ -1538,7 +1943,7 @@ export const CustomerWebsite: React.FC<CustomerWebsiteProps> = ({
                     <span className="font-semibold text-[#3B1A08]">₹{bookingDetails.bill.Subtotal}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-[#6B4C35]">GST (5%):</span>
+                    <span className="text-[#6B4C35]">Taxes &amp; GST:</span>
                     <span className="font-semibold text-[#3B1A08]">₹{bookingDetails.bill.Tax_Amount}</span>
                   </div>
                   {Number(bookingDetails.bill.Discount) > 0 && (

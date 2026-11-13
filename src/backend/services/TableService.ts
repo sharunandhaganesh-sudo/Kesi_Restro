@@ -178,6 +178,19 @@ export class TableService {
       const table = db.findOne('Tables', (t) => t.Table_ID === tableId);
       if (!table) return { success: false, message: 'Table not found.' };
 
+      if (table.Table_Status === 'Occupied') {
+        const activeRes = db.findOne(
+          'Table_Reservations',
+          (r) => r.Table_ID === tableId && r.Reservation_Status === 'Claimed'
+        );
+        if (activeRes && activeRes.Booking_ID !== bookingId) {
+          return { success: false, message: `Table ${table.Table_Number} is already occupied by booking ${activeRes.Booking_ID}.` };
+        }
+      }
+      if (table.Table_Status === 'Unavailable') {
+        return { success: false, message: `Table ${table.Table_Number} is currently marked as unavailable.` };
+      }
+
       // Update Table to Occupied
       db.updateRow('Tables', 'Table_ID', tableId, {
         Table_Status: 'Occupied',
